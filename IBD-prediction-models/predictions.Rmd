@@ -1,0 +1,956 @@
+---
+title: "Predictions using CodaCore"
+author: "Arnau Vich"
+date: "2022"
+output: html_document
+---
+
+Code adapted from: https://egr95.github.io/R-codacore/guide.html
+
+
+1. Import libraries
+---
+
+```{r}
+
+library (codacore)
+library (tensorflow)
+set.seed(50)
+`%ni%` = Negate(`%in%`)
+setwd("~/Desktop/IBD_metabolomics_2022/2.Output/8.CoDaCore/")
+```
+
+2. Import and prepare data 
+---
+
+
+```{r}
+#Prepare data#
+cc_pheno <- read.delim("./Phenotypes_case_control.txt", row.names=1)
+pheno_ibd <- read.delim("./Phenotypes_IBD_extra.txt", row.names=1)
+
+taxa=read.table("./taxa_cc.txt",sep="\t", header = T, row.names = 1)
+taxa_filt=taxa[,((colSums(taxa !=0) / nrow(taxa)) *100 )>20]
+all_metabolites_raw <- read.delim("./metabolites_with_ID.txt", row.names=1)
+IDs_LLD <- read.delim("./IDs_LLD.txt", header=FALSE)
+IDs_IBD <- read.delim("./IDs_IBD.txt", header=FALSE)
+
+
+#Multiply relative abundances by read depth to simulate count data
+
+cc_rd=read.table("./IDs_read_depth.txt", header = T, row.names = "PID")
+cc_rd$row.names=NULL
+cc_rd$IDs_MGS=NULL
+
+cc_rd2=merge(cc_rd, taxa_filt, by="row.names")
+row.names(cc_rd2)=cc_rd2$Row.names
+cc_rd3=cc_rd2[,c(1:2)]
+predictors2=cc_rd2[,c(3:ncol(cc_rd2))]
+taxa_pred=as.data.frame(predictors2*cc_rd3$PF_RD)
+
+#Adding a pseudcount
+taxa_pred=taxa_pred+1
+
+taxa_cc=merge(cc_pheno,taxa_pred,by="row.names")
+row.names(taxa_cc)=taxa_cc$Row.names
+taxa_cc$Row.names=NULL
+
+samples_CD=row.names(subset(pheno_ibd, pheno_ibd$CD_or_UC=="CD"))
+samples_UC=row.names(subset(pheno_ibd, pheno_ibd$CD_or_UC=="UC" ))
+samples_IBDU=row.names(subset(pheno_ibd, pheno_ibd$CD_or_UC=="IBDU" ))
+samples_resection=row.names(subset(pheno_ibd, pheno_ibd$Past_ResectionAny=="yes"))
+samples_IBD=row.names(pheno_ibd)
+
+
+cc_pheno$host_BMI[is.na(cc_pheno$host_BMI)]=median(cc_pheno$host_BM, na.rm = T)
+cc_pheno$med_ACE_inhibitor[is.na(cc_pheno$med_ACE_inhibitor)]="Non_user"
+cc_pheno$med_PPI[is.na(cc_pheno$med_PPI)]="Non_user"
+diet=colnames(cc_pheno)[grep("diet",colnames(cc_pheno))]
+for (a in diet){
+  cc_pheno[,a][is.na(cc_pheno[,a])]=median(cc_pheno[,a], na.rm = T)
+}
+cc_pheno$host_SmokeCurrentSmoker[is.na(cc_pheno$host_SmokeCurrentSmoker)]=1
+na_count = sapply(cc_pheno, function(y) sum(length(which(is.na(y)))))
+na_count=data.frame(na_count)
+
+
+all_new_ID_raw_filt=all_metabolites_raw[,((colSums(!is.na(all_metabolites_raw)) / nrow(all_metabolites_raw)) *100 )>70]
+#all_new_ID_raw[is.na(all_new_ID_raw)]=0
+all_new_ID_raw_filt[sapply(all_new_ID_raw_filt, is.numeric)] <- lapply(all_new_ID_raw_filt[sapply(all_new_ID_raw_filt, is.numeric)], function(a) ifelse(is.na(a), min(a, na.rm = TRUE)/2, a))
+```
+
+3. Precit IBD vs controls
+---
+
+```{r}
+
+my_phenos=cc_pheno[,c("run_day_cat","Amount_sample_gram", "metabolon_Month_in_freezer","LC.COLUMN","host_Age","host_BMI","host_Sex","clinical_ChrA","clinical_HBD2", "clinical_Calprot200","clinical_BowelMovementADayDef", "IBD")]
+my_phenos$IBD[my_phenos$IBD==1]="Control"
+my_phenos$IBD[my_phenos$IBD==2]="IBD"
+mtb_cc=merge(my_phenos,all_new_ID_raw_filt,by="row.names")
+row.names(mtb_cc)=mtb_cc$Row.names
+mtb_cc$Row.names=NULL
+
+
+mtb_cc2=mtb_cc
+predict_IBD=mtb_cc2[,"IBD"]
+metabolites=mtb_cc2[,13:ncol(mtb_cc2)]
+trainIndex <- sample(1:nrow(metabolites), 0.75 * nrow(metabolites))
+
+train_IBD_pheno <- predict_IBD[trainIndex]
+train_IBD_metabolite <- metabolites[trainIndex,]
+
+IBD_model=codacore(train_IBD_metabolite, train_IBD_pheno, logRatioType = 'balances', lambda = 1)
+
+test_IBD_pheno=predict_IBD[-trainIndex]
+test_IBD_metabolite=metabolites[-trainIndex,]
+IBD_Hat <- predict(IBD_model, test_IBD_metabolite, logits=F)
+
+IBD_Hat2=IBD_Hat
+failure <- IBD_Hat2 < 0.5
+success <- IBD_Hat2 >= 0.5
+IBD_Hat2[failure] <- unique(predict_IBD)[2]
+IBD_Hat2[success] <- unique(predict_IBD)[1]
+```
+
+```{r, echo=F}
+cat("Test set AUC =", pROC::auc(pROC::roc(test_IBD_pheno, IBD_Hat, quiet=T)))
+cat("Classification accuracy on test set =", round(mean(IBD_Hat2 == test_IBD_pheno), 2))
+print (IBD_model)
+plot(IBD_model)
+plotROC(IBD_model)
+```
+
+
+
+3.1. Predict IBD vs Controls removing patients with intestinal surgery
+---
+
+
+```{r}
+
+mtb_cc2=subset(mtb_cc,row.names(mtb_cc)%ni%samples_resection)
+predict_IBD=mtb_cc2[,"IBD"]
+metabolites=mtb_cc2[,13:ncol(mtb_cc2)]
+trainIndex <- sample(1:nrow(metabolites), 0.75 * nrow(metabolites))
+
+train_IBD_pheno <- predict_IBD[trainIndex]
+train_IBD_metabolite <- metabolites[trainIndex,]
+
+IBD_model_noresc=codacore(train_IBD_metabolite, train_IBD_pheno, logRatioType = 'balances', lambda = 1)
+
+test_IBD_pheno=predict_IBD[-trainIndex]
+test_IBD_metabolite=metabolites[-trainIndex,]
+IBD_Hat <- predict(IBD_model_noresc, test_IBD_metabolite, logits=F)
+
+IBD_Hat2=IBD_Hat
+failure <- IBD_Hat2 < 0.5
+success <- IBD_Hat2 >= 0.5
+IBD_Hat2[failure] <- unique(predict_IBD)[2]
+IBD_Hat2[success] <- unique(predict_IBD)[1]
+```
+
+```{r, echo=F}
+cat("Test set AUC =", pROC::auc(pROC::roc(test_IBD_pheno, IBD_Hat, quiet=T)))
+cat("Classification accuracy on test set =", round(mean(IBD_Hat2 == test_IBD_pheno), 2))
+print (IBD_model_noresc)
+plot(IBD_model_noresc)
+plotROC(IBD_model_noresc)
+```
+
+
+3.2. Predict IBD vs Controls comparing to a model with: age, sex, BMI and fecal calprotectin 
+---
+
+
+```{r}
+my_phenos=mtb_cc2[,c("host_Age","host_BMI","host_Sex", "clinical_Calprot200","IBD")]
+my_phenos$IBD[my_phenos$IBD=="Control"]=0
+my_phenos$IBD[my_phenos$IBD=="IBD"]=1
+my_phenos$IBD=as.numeric(as.character(my_phenos$IBD))
+
+train_correct_IBD=my_phenos[trainIndex,]
+for (cc in colnames(train_correct_IBD)) {if (sum(is.na(train_correct_IBD[[cc]])) > 0) {train_correct_IBD[[cc]][is.na(train_correct_IBD[[cc]])] <- median(train_correct_IBD[[cc]],na.rm = T)}}
+
+#Regress out age, sex, bmi, calprotectin to IBD
+partial_IBD <- glm(IBD ~ ., data=train_correct_IBD, family='binomial')
+#Re-calculate ratios after adjusting by covariates 
+model_IBD_corr=codacore(train_IBD_metabolite, train_IBD_pheno, offset=predict(partial_IBD), logRatioType = 'balances', lambda = 1)
+partial_IBD_AUC <- pROC::auc(pROC::roc(train_IBD_pheno, predict(partial_IBD), quiet=T))
+model_IBD_corr_AUC <- model_IBD_corr$ensemble[[1]]$AUC
+
+test_correct_IBD=subset(my_phenos,row.names(my_phenos)%in%row.names(test_IBD_metabolite))
+IBD_HatLogit <- predict(partial_IBD, newdata = test_correct_IBD) + predict(model_IBD_corr, test_IBD_metabolite, logits=T)
+IBD_Hat <- IBD_HatLogit > 0
+test_IBD_AUC_corr <- pROC::auc(pROC::roc(test_IBD_pheno, IBD_HatLogit, quiet=T))
+```
+
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_IBD_corr_AUC - partial_IBD_AUC)), "%")
+cat("Test AUC:", round(100 * test_IBD_AUC_corr), "%")
+print (model_IBD_corr)
+plot(model_IBD_corr)
+plotROC(model_IBD_corr)
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio = cbind(train_correct_IBD, getLogRatios(model_IBD_corr))
+multimodelIBD <- glm(IBD ~ ., data=with_ratio, family='binomial')
+summary(multimodelIBD)
+
+library(lmtest)
+lrtest(partial_IBD, multimodelIBD)
+```
+
+
+3.3. Predict IBD vs Controls based on taxa comparing to a model with: age, sex, BMI and fecal calprotectin 
+---
+
+```{r}
+taxa_cc2=taxa_cc
+taxa_cc2=subset(taxa_cc,row.names(mtb_cc)%ni%samples_resection)
+
+my_phenos=taxa_cc2[,c("host_Age","host_BMI","host_Sex", "clinical_Calprot200","IBD")]
+
+my_phenos$IBD[my_phenos$IBD==1]="Control"
+my_phenos$IBD[my_phenos$IBD==2]="IBD"
+predict_IBD=my_phenos[,"IBD"]
+
+my_phenos$IBD[my_phenos$IBD=="Control"]=0
+my_phenos$IBD[my_phenos$IBD=="IBD"]=1
+my_phenos$IBD=as.numeric(as.character(my_phenos$IBD))
+
+bugs=taxa_cc2[,203:ncol(taxa_cc2)]
+#trainIndex <- sample(1:nrow(bugs), 0.75 * nrow(bugs))
+
+train_IBD_pheno <- predict_IBD[trainIndex]
+train_IBD_bugs <- bugs[trainIndex,]
+train_correct_IBD=my_phenos[trainIndex,]
+
+test_IBD_pheno <- predict_IBD[-trainIndex]
+test_IBD_bugs <- bugs[-trainIndex,]
+test_correct_IBD=my_phenos[-trainIndex,]
+
+for (cc in colnames(train_correct_IBD)) {if (sum(is.na(train_correct_IBD[[cc]])) > 0) {train_correct_IBD[[cc]][is.na(train_correct_IBD[[cc]])] <- median(train_correct_IBD[[cc]],na.rm = T)}}
+
+partial_IBD_bugs <- glm(IBD ~ ., data=train_correct_IBD, family='binomial')
+model_IBD_corr_bugs=codacore(train_IBD_bugs, train_IBD_pheno, offset=predict(partial_IBD_bugs), logRatioType = 'balances', lambda = 1)
+
+partial_IBD_AUC_bugs <- pROC::auc(pROC::roc(train_IBD_pheno, predict(partial_IBD_bugs), quiet=T))
+model_IBD_corr_AUC_bugs <- model_IBD_corr_bugs$ensemble[[1]]$AUC
+
+IBD_HatLogit <- predict(partial_IBD_bugs, newdata = test_correct_IBD) + predict(model_IBD_corr_bugs, test_IBD_bugs, logits=T)
+IBD_Hat <- IBD_HatLogit > 0
+test_IBD_AUC_corr_bugs <- pROC::auc(pROC::roc(test_IBD_pheno, IBD_HatLogit, quiet=T))
+```
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_IBD_corr_AUC_bugs - partial_IBD_AUC_bugs)), "%")
+cat("Test AUC:", round(100 * test_IBD_AUC_corr_bugs), "%")
+print (model_IBD_corr_bugs)
+plot(model_IBD_corr_bugs)
+plotROC(model_IBD_corr_bugs)
+```
+
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_bug = cbind(train_correct_IBD, getLogRatios(model_IBD_corr_bugs))
+multimodelIBD_bug <- glm(IBD ~ ., data=with_ratio_bug, family='binomial')
+summary(multimodelIBD_bug)
+lrtest(partial_IBD_bugs, multimodelIBD_bug)
+```
+
+
+```{r, echo=F}
+cat("Ratio metabolite and ratio taxa")
+
+with_ratio_mtb_bug = cbind(with_ratio, getLogRatios(model_IBD_corr_bugs))
+colnames(with_ratio_mtb_bug)=c("Age","BMI","Sex","Calprotectin","IBD","ratio_mtb","ratio_bug")
+multimodelIBD_mtb_bug <- glm(IBD ~ ., data=with_ratio_mtb_bug, family='binomial')
+summary(multimodelIBD_mtb_bug)
+lrtest(multimodelIBD,multimodelIBD_mtb_bug)
+```
+
+
+
+4. Predict CD vs controls 
+---
+
+```{r}
+
+#Predict CD ratio
+CD_df=mtb_cc
+CD_df=subset(CD_df,row.names(CD_df)%ni%samples_UC)
+CD_df=subset(CD_df,row.names(CD_df)%ni%samples_IBDU)
+CD_df2=subset(CD_df,row.names(CD_df)%ni%samples_resection)
+my_phenos_CD=CD_df2[,c("host_Age","host_BMI","host_Sex", "clinical_Calprot200","IBD")]
+predict_CD=my_phenos_CD[,"IBD"]
+my_phenos_CD$IBD[my_phenos_CD$IBD=="Control"]=0
+my_phenos_CD$IBD[my_phenos_CD$IBD=="IBD"]=1
+my_phenos_CD$IBD=as.numeric(as.character(my_phenos_CD$IBD))
+
+metabolites_CD=CD_df2[,13:854]
+trainIndex <- sample(1:nrow(metabolites_CD), 0.75 * nrow(metabolites_CD))
+
+train_CD_pheno <- predict_CD[trainIndex]
+train_CD_metabolite <- metabolites_CD[trainIndex,]
+train_CD_correct <- my_phenos_CD[trainIndex,]
+
+test_CD_pheno <- predict_CD[-trainIndex]
+test_CD_metabolite <- metabolites_CD[-trainIndex,]
+test_CD_correct <- my_phenos_CD[-trainIndex,]
+
+
+for (cc in colnames(train_CD_correct)) {if (sum(is.na(train_CD_correct[[cc]])) > 0) {train_CD_correct[[cc]][is.na(train_CD_correct[[cc]])] <- median(train_CD_correct[[cc]],na.rm = T)}}
+
+partial_CD <- glm(IBD ~ ., data=train_CD_correct, family='binomial')
+model_CD_corr=codacore(train_CD_metabolite, train_CD_pheno, offset=predict(partial_CD), logRatioType = 'balances', lambda = 1)
+
+partial_CD_AUC <- pROC::auc(pROC::roc(train_CD_pheno, predict(partial_CD), quiet=T))
+model_CD_corr_AUC <- model_CD_corr$ensemble[[1]]$AUC
+
+
+CD_HatLogit <- predict(partial_CD, newdata = test_CD_correct) + predict(model_CD_corr, test_CD_metabolite, logits=T)
+CD_Hat <- CD_HatLogit > 0
+test_CD_AUC_corr <- pROC::auc(pROC::roc(test_CD_pheno, CD_HatLogit, quiet=T))
+```
+
+```{r, echo=F}
+
+cat("AUC gain:", round(100 * (model_CD_corr_AUC - partial_CD_AUC)), "%")
+cat("Test AUC:", round(100 * test_CD_AUC_corr), "%")
+print (model_CD_corr)
+plot(model_CD_corr)
+plotROC(model_CD_corr)
+
+```
+
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio = cbind(train_CD_correct, getLogRatios(model_CD_corr))
+multimodelCD <- glm(IBD ~ ., data=with_ratio, family='binomial')
+summary(multimodelCD)
+
+lrtest(partial_CD, multimodelCD)
+```
+
+
+4.1. Predict CD vs controls with taxa  
+---
+
+
+```{r}
+taxa_cc2=taxa_cc
+taxa_cc2=subset(taxa_cc2,row.names(taxa_cc2)%ni%samples_resection)
+taxa_cc2=subset(taxa_cc2,row.names(taxa_cc2)%ni%samples_UC)
+taxa_cc2=subset(taxa_cc2,row.names(taxa_cc2)%ni%samples_IBDU)
+
+my_phenos_CD=taxa_cc2[,c("host_Age","host_BMI","host_Sex", "clinical_Calprot200","IBD")]
+my_phenos_CD$IBD[my_phenos_CD$IBD==1]="Control"
+my_phenos_CD$IBD[my_phenos_CD$IBD==2]="IBD"
+
+predict_CD=my_phenos_CD[,"IBD"]
+my_phenos_CD$IBD[my_phenos_CD$IBD=="Control"]=0
+my_phenos_CD$IBD[my_phenos_CD$IBD=="IBD"]=1
+my_phenos_CD$IBD=as.numeric(as.character(my_phenos_CD$IBD))
+bugs=taxa_cc2[,203:ncol(taxa_cc2)]
+#trainIndex <- sample(1:nrow(bugs), 0.75 * nrow(bugs))
+
+train_CD_pheno <- predict_CD[trainIndex]
+train_CD_bugs <- bugs[trainIndex,]
+train_CD_correct <- my_phenos_CD[trainIndex,]
+
+test_CD_pheno <- predict_CD[-trainIndex]
+test_CD_bugs <- bugs[-trainIndex,]
+test_CD_correct=my_phenos_CD[-trainIndex,]
+
+for (cc in colnames(train_CD_correct)) {if (sum(is.na(train_CD_correct[[cc]])) > 0) {train_CD_correct[[cc]][is.na(train_CD_correct[[cc]])] <- median(train_CD_correct[[cc]],na.rm = T)}}
+
+partial_CD_bugs <- glm(IBD ~ ., data=train_CD_correct, family='binomial')
+model_CD_corr_bugs=codacore(train_CD_bugs, train_CD_pheno, offset=predict(partial_CD_bugs), logRatioType = 'balances', lambda = 1)
+
+partial_CD_AUC_bugs <- pROC::auc(pROC::roc(train_CD_pheno, predict(partial_CD_bugs), quiet=T))
+model_CD_corr_AUC_bugs <- model_CD_corr_bugs$ensemble[[1]]$AUC
+#cat("AUC gain:", round(100 * (model_CD_corr_AUC_bugs - partial_CD_AUC_bugs)), "%")
+
+CD_HatLogit <- predict(partial_CD_bugs, newdata = test_CD_correct) + predict(model_CD_corr_bugs, test_CD_bugs, logits=T)
+CD_Hat <- CD_HatLogit > 0
+test_CD_AUC_corr_bugs <- pROC::auc(pROC::roc(test_CD_pheno, CD_HatLogit, quiet=T))
+#cat("Test AUC:", round(100 * test_CD_AUC_corr_bugs), "%")
+
+```
+
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_CD_corr_AUC_bugs - partial_CD_AUC_bugs)), "%")
+cat("Test AUC:", round(100 * test_CD_AUC_corr_bugs), "%")
+print (model_CD_corr_bugs)
+plot(model_CD_corr_bugs)
+plotROC(model_CD_corr_bugs)
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_bug = cbind(train_CD_correct, getLogRatios(model_CD_corr_bugs))
+multimodelCD_bug <- glm(IBD ~ ., data=with_ratio_bug, family='binomial')
+summary(multimodelCD_bug)
+lrtest(partial_CD_bugs, multimodelCD_bug)
+```
+
+
+
+5. UC vs controls
+----
+
+```{r}
+
+#Predict UC ratio
+UC_df=mtb_cc
+UC_df=subset(UC_df,row.names(UC_df)%ni%samples_CD)
+UC_df=subset(UC_df,row.names(UC_df)%ni%samples_IBDU)
+UC_df2=subset(UC_df,row.names(UC_df)%ni%samples_resection)
+my_phenos_UC=UC_df2[,c("host_Age","host_BMI","host_Sex", "clinical_Calprot200","IBD")]
+predict_UC=my_phenos_UC[,"IBD"]
+my_phenos_UC$IBD[my_phenos_UC$IBD=="Control"]=0
+my_phenos_UC$IBD[my_phenos_UC$IBD=="IBD"]=1
+my_phenos_UC$IBD=as.numeric(as.character(my_phenos_UC$IBD))
+
+metabolites_UC=UC_df2[,13:854]
+trainIndex <- sample(1:nrow(metabolites_UC), 0.75 * nrow(metabolites_UC))
+
+train_UC_pheno <- predict_UC[trainIndex]
+train_UC_metabolite <- metabolites_UC[trainIndex,]
+train_UC_correct <- my_phenos_UC[trainIndex,]
+
+test_UC_pheno <- predict_UC[-trainIndex]
+test_UC_metabolite <- metabolites_UC[-trainIndex,]
+test_UC_correct <- my_phenos_UC[-trainIndex,]
+
+
+for (cc in colnames(train_UC_correct)) {if (sum(is.na(train_UC_correct[[cc]])) > 0) {train_UC_correct[[cc]][is.na(train_UC_correct[[cc]])] <- median(train_UC_correct[[cc]],na.rm = T)}}
+
+partial_UC <- glm(IBD ~ ., data=train_UC_correct, family='binomial')
+model_UC_corr=codacore(train_UC_metabolite, train_UC_pheno, offset=predict(partial_UC), logRatioType = 'balances', lambda = 1)
+
+partial_UC_AUC <- pROC::auc(pROC::roc(train_UC_pheno, predict(partial_UC), quiet=T))
+model_UC_corr_AUC <- model_UC_corr$ensemble[[1]]$AUC
+#cat("AUC gain:", round(100 * (model_UC_corr_AUC - partial_UC_AUC)), "%")
+
+
+UC_HatLogit <- predict(partial_UC, newdata = test_UC_correct) + predict(model_UC_corr, test_UC_metabolite, logits=T)
+UC_Hat <- UC_HatLogit > 0
+test_UC_AUC_corr <- pROC::auc(pROC::roc(test_UC_pheno, UC_HatLogit, quiet=T))
+cat("Test AUC:", round(100 * test_UC_AUC_corr), "%")
+```
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_UC_corr_AUC - partial_UC_AUC)), "%")
+cat("Test AUC:", round(100 * test_UC_AUC_corr), "%")
+print (model_UC_corr)
+plot(model_UC_corr)
+plotROC(model_UC_corr)
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio = cbind(train_UC_correct, getLogRatios(model_UC_corr))
+multimodelUC <- glm(IBD ~ ., data=with_ratio, family='binomial')
+summary(multimodelUC)
+
+lrtest(partial_UC, multimodelUC)
+```
+
+
+
+5.1 UC vs controls based on taxa
+---
+
+```{r}
+taxa_cc2=taxa_cc
+taxa_cc2=subset(taxa_cc2,row.names(taxa_cc2)%ni%samples_resection)
+taxa_cc2=subset(taxa_cc2,row.names(taxa_cc2)%ni%samples_CD)
+taxa_cc2=subset(taxa_cc2,row.names(taxa_cc2)%ni%samples_IBDU)
+
+my_phenos_UC=taxa_cc2[,c("host_Age","host_BMI","host_Sex", "clinical_Calprot200","IBD")]
+my_phenos_UC$IBD[my_phenos_UC$IBD==1]="Control"
+my_phenos_UC$IBD[my_phenos_UC$IBD==2]="IBD"
+
+predict_UC=my_phenos_UC[,"IBD"]
+my_phenos_UC$IBD[my_phenos_UC$IBD=="Control"]=0
+my_phenos_UC$IBD[my_phenos_UC$IBD=="IBD"]=1
+my_phenos_UC$IBD=as.numeric(as.character(my_phenos_UC$IBD))
+bugs=taxa_cc2[,203:ncol(taxa_cc2)]
+#trainIndex <- sample(1:nrow(bugs), 0.75 * nrow(bugs))
+
+train_UC_pheno <- predict_UC[trainIndex]
+train_UC_bugs <- bugs[trainIndex,]
+train_UC_correct <- my_phenos_UC[trainIndex,]
+
+test_UC_pheno <- predict_UC[-trainIndex]
+test_UC_bugs <- bugs[-trainIndex,]
+test_UC_correct=my_phenos_UC[-trainIndex,]
+
+for (cc in colnames(train_UC_correct)) {if (sum(is.na(train_UC_correct[[cc]])) > 0) {train_UC_correct[[cc]][is.na(train_UC_correct[[cc]])] <- median(train_UC_correct[[cc]],na.rm = T)}}
+
+partial_UC_bugs <- glm(IBD ~ ., data=train_UC_correct, family='binomial')
+model_UC_corr_bugs=codacore(train_UC_bugs, train_UC_pheno, offset=predict(partial_UC_bugs), logRatioType = 'balances', lambda = 1)
+
+partial_UC_AUC_bugs <- pROC::auc(pROC::roc(train_UC_pheno, predict(partial_UC_bugs), quiet=T))
+model_UC_corr_AUC_bugs <- model_UC_corr_bugs$ensemble[[1]]$AUC
+
+
+UC_HatLogit <- predict(partial_UC_bugs, newdata = test_UC_correct) + predict(model_UC_corr_bugs, test_UC_bugs, logits=T)
+UC_Hat <- UC_HatLogit > 0
+test_UC_AUC_corr_bugs <- pROC::auc(pROC::roc(test_UC_pheno, UC_HatLogit, quiet=T))
+
+```
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_UC_corr_AUC_bugs - partial_UC_AUC_bugs)), "%")
+cat("Test AUC:", round(100 * test_UC_AUC_corr_bugs), "%")
+print (model_UC_corr_bugs)
+plot(model_UC_corr_bugs)
+plotROC(model_UC_corr_bugs)
+
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_bug = cbind(train_UC_correct, getLogRatios(model_UC_corr_bugs))
+multimodelUC_bug <- glm(IBD ~ ., data=with_ratio_bug, family='binomial')
+summary(multimodelUC_bug)
+lrtest(partial_UC_bugs, multimodelUC_bug)
+```
+
+
+6. Subtypes (CD vs UC)
+----
+
+```{r}
+ibd_phenos=pheno_ibd[,c("CD_or_UC", "Location", "Past_ResectionAny", "Flare_in_future", "FutureResectionAny")]
+ibd_phenos=subset(ibd_phenos, ibd_phenos$CD_or_UC!="IBDU")
+ibd_phenos=subset(ibd_phenos,row.names(ibd_phenos)%ni%samples_resection)
+my_phenos=mtb_cc[,c("run_day_cat","Amount_sample_gram", "metabolon_Month_in_freezer","LC.COLUMN","host_Age","host_BMI","host_Sex","clinical_ChrA","clinical_HBD2", "clinical_Calprot200","clinical_BowelMovementADayDef")]
+ibd_phenos2=merge(ibd_phenos,my_phenos, by="row.names")
+row.names(ibd_phenos2)=ibd_phenos2$Row.names
+ibd_phenos2$Row.names=NULL
+metabolites_IBD=merge(ibd_phenos2,metabolites,by="row.names")
+row.names(metabolites_IBD)=metabolites_IBD$Row.names
+metabolites_IBD$Row.names=NULL
+
+my_phenos_SIBD=metabolites_IBD[,c("host_Age","host_BMI","host_Sex", "clinical_Calprot200","CD_or_UC")]
+my_phenos_SIBD$CD_or_UC[is.na(my_phenos_SIBD$CD_or_UC)]="UC"
+my_phenos_SIBD$IBD2=0
+my_phenos_SIBD$IBD2[my_phenos_SIBD$CD_or_UC=="CD"]=0
+my_phenos_SIBD$IBD2[my_phenos_SIBD$CD_or_UC=="UC"]=1
+my_phenos_SIBD$IBD2=as.numeric(as.character(my_phenos_SIBD$IBD2))
+metabolites_IBD=metabolites_IBD[,17:ncol(metabolites_IBD)]
+
+trainIndexSIBD <- sample(1:nrow(metabolites_IBD), 0.75 * nrow(metabolites_IBD))
+
+train_SIBD_correct=my_phenos_SIBD[trainIndexSIBD,]
+train_SIBD_pheno=my_phenos_SIBD$CD_or_UC[trainIndexSIBD]
+train_SIBD_mtb=metabolites_IBD[trainIndexSIBD,]
+train_SIBD_correct$CD_or_UC=NULL
+
+test_SIBD_correct=my_phenos_SIBD[-trainIndexSIBD,]
+test_SIBD_pheno=my_phenos_SIBD$CD_or_UC[-trainIndexSIBD]
+test_SIBD_mtb=metabolites_IBD[-trainIndexSIBD,]
+test_SIBD_correct$CD_or_UC=NULL
+
+
+for (cc in colnames(train_SIBD_correct)) {if (sum(is.na(train_SIBD_correct[[cc]])) > 0) {train_SIBD_correct[[cc]][is.na(train_SIBD_correct[[cc]])] <- median(train_SIBD_correct[[cc]],na.rm = T)}}
+
+partial_SIBD <- glm(IBD2 ~ ., data=train_SIBD_correct, family='binomial')
+model_SIBD_corr=codacore(train_SIBD_mtb, train_SIBD_pheno, offset=predict(partial_SIBD), logRatioType = 'balances', lambda = 1)
+
+partial_SIBD_AUC <- pROC::auc(pROC::roc(train_SIBD_pheno, predict(partial_SIBD), quiet=T))
+model_SIBD_corr_AUC <- model_SIBD_corr$ensemble[[1]]$AUC
+
+
+
+SIBD_HatLogit <- predict(partial_SIBD, newdata = test_SIBD_correct) + predict(model_SIBD_corr, test_SIBD_mtb, logits=T)
+SIBD_Hat <- SIBD_HatLogit > 0
+test_SIBD_AUC_corr <- pROC::auc(pROC::roc(test_SIBD_pheno, SIBD_HatLogit, quiet=T))
+
+```
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_SIBD_corr_AUC - partial_SIBD_AUC)), "%")
+cat("Test AUC:", round(100 * test_SIBD_AUC_corr), "%")
+print (model_SIBD_corr)
+plot(model_SIBD_corr)
+plotROC(model_SIBD_corr)
+
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_SIBD = cbind(train_SIBD_correct, getLogRatios(model_SIBD_corr))
+multimodelSIBD <- glm(IBD2 ~ ., data=with_ratio_SIBD, family='binomial')
+summary(multimodelSIBD)
+lrtest(partial_SIBD, multimodelSIBD)
+```
+
+
+6.1. Subtypes (CD vs UC) based on taxa
+---
+
+```{r}
+taxa_SIBD=taxa_cc
+bugs_SIBD=merge(ibd_phenos,taxa_SIBD,by="row.names")
+row.names(bugs_SIBD)=bugs_SIBD$Row.names
+bugs_SIBD$Row.names=NULL
+
+my_phenos_SIBD=bugs_SIBD[,c("host_Age","host_BMI","host_Sex", "clinical_Calprot200","CD_or_UC")]
+my_phenos_SIBD$CD_or_UC[is.na(my_phenos_SIBD$CD_or_UC)]="UC"
+my_phenos_SIBD$IBD2=0
+my_phenos_SIBD$IBD2[my_phenos_SIBD$CD_or_UC=="CD"]=0
+my_phenos_SIBD$IBD2[my_phenos_SIBD$CD_or_UC=="UC"]=1
+my_phenos_SIBD$IBD2=as.numeric(as.character(my_phenos_SIBD$IBD2))
+
+
+bugs_SIBD2=bugs_SIBD[,208:ncol(bugs_SIBD)]
+
+#trainIndexSIBD <- sample(1:nrow(bugs_SIBD2), 0.75 * nrow(bugs_SIBD2))
+
+train_SIBD_correct=my_phenos_SIBD[trainIndexSIBD,]
+train_SIBD_pheno=my_phenos_SIBD$CD_or_UC[trainIndexSIBD]
+train_SIBD_bugs=bugs_SIBD2[trainIndexSIBD,]
+train_SIBD_correct$CD_or_UC=NULL
+
+test_SIBD_correct=my_phenos_SIBD[-trainIndexSIBD,]
+test_SIBD_pheno=my_phenos_SIBD$CD_or_UC[-trainIndexSIBD]
+test_SIBD_bugs=bugs_SIBD2[-trainIndexSIBD,]
+test_SIBD_correct$CD_or_UC=NULL
+
+for (cc in colnames(train_SIBD_correct)) {if (sum(is.na(train_SIBD_correct[[cc]])) > 0) {train_SIBD_correct[[cc]][is.na(train_SIBD_correct[[cc]])] <- median(train_SIBD_correct[[cc]],na.rm = T)}}
+for (cc in colnames(test_SIBD_correct)) {if (sum(is.na(test_SIBD_correct[[cc]])) > 0) {test_SIBD_correct[[cc]][is.na(test_SIBD_correct[[cc]])] <- median(test_SIBD_correct[[cc]],na.rm = T)}}
+
+
+partial_SIBD_bugs <- glm(IBD2 ~ ., data=train_SIBD_correct, family='binomial')
+model_SIBD_corr_bugs=codacore(train_SIBD_bugs, train_SIBD_pheno, offset=predict(partial_SIBD_bugs), logRatioType = 'balances', lambda = 1)
+
+partial_SIBD_AUC_bugs <- pROC::auc(pROC::roc(train_SIBD_pheno, predict(partial_SIBD_bugs), quiet=T))
+model_SIBD_corr_AUC_bugs <- model_SIBD_corr_bugs$ensemble[[1]]$AUC
+
+SIBD_HatLogit <- predict(partial_SIBD_bugs, newdata = test_SIBD_correct) + predict(model_SIBD_corr_bugs, test_SIBD_bugs, logits=T)
+SIBD_Hat <- SIBD_HatLogit > 0
+test_SIBD_AUC_corr_bugs <- pROC::auc(pROC::roc(test_SIBD_pheno, SIBD_HatLogit, quiet=T))
+```
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_SIBD_corr_AUC_bugs - partial_SIBD_AUC_bugs)), "%")
+cat("Test AUC:", round(100 * test_SIBD_AUC_corr_bugs), "%")
+print (model_SIBD_corr_bugs)
+plot(model_SIBD_corr_bugs)
+plotROC(model_SIBD_corr_bugs)
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_SIBD = cbind(train_SIBD_correct, getLogRatios(model_SIBD_corr_bugs))
+multimodelSIBD_bugs <- glm(IBD2 ~ ., data=with_ratio_SIBD, family='binomial')
+summary(multimodelSIBD)
+lrtest(partial_SIBD_bugs, multimodelSIBD_bugs)
+```
+
+
+
+7. Disease activity (active vs remission)
+---
+
+```{r}
+Act_phenos=pheno_ibd[,c("clinical_ActiveDisease", "Location", "Past_ResectionAny", "Flare_in_future", "FutureResectionAny")]
+Act_phenos$clinical_ActiveDisease[is.na(Act_phenos$clinical_ActiveDisease)]="NotActive"
+
+#ibd_phenos=subset(Act_phenos, Act_phenos$CD_or_UC!="IBDU")
+ibd_phenos=subset(Act_phenos,row.names(Act_phenos)%ni%samples_resection)
+
+my_phenos=mtb_cc[,c("run_day_cat","Amount_sample_gram", "metabolon_Month_in_freezer","LC.COLUMN","host_Age","host_BMI","host_Sex","clinical_ChrA","clinical_HBD2", "clinical_Calprot200","clinical_BowelMovementADayDef")]
+ibd_phenos2=merge(ibd_phenos,my_phenos, by="row.names")
+row.names(ibd_phenos2)=ibd_phenos2$Row.names
+ibd_phenos2$Row.names=NULL
+metabolites_IBD=merge(ibd_phenos2,metabolites,by="row.names")
+row.names(metabolites_IBD)=metabolites_IBD$Row.names
+metabolites_IBD$Row.names=NULL
+
+my_phenos_Act=metabolites_IBD[,c("host_Age","host_BMI","host_Sex","clinical_ActiveDisease")]
+my_phenos_Act$IBD2=0
+my_phenos_Act$IBD2[my_phenos_Act$clinical_ActiveDisease=="NotActive"]=0
+my_phenos_Act$IBD2[my_phenos_Act$clinical_ActiveDisease=="Active"]=1
+my_phenos_Act$IBD2=as.numeric(as.character(my_phenos_Act$IBD2))
+metabolites_IBD=metabolites_IBD[,17:ncol(metabolites_IBD)]
+
+trainIndexAct <- sample(1:nrow(metabolites_IBD), 0.75 * nrow(metabolites_IBD))
+
+train_Act_correct=my_phenos_Act[trainIndexAct,]
+train_Act_pheno=my_phenos_Act$clinical_ActiveDisease[trainIndexAct]
+train_Act_mtb=metabolites_IBD[trainIndexAct,]
+train_Act_correct$clinical_ActiveDisease=NULL
+
+test_Act_correct=my_phenos_Act[-trainIndexAct,]
+test_Act_pheno=my_phenos_Act$clinical_ActiveDisease[-trainIndexAct]
+test_Act_mtb=metabolites_IBD[-trainIndexAct,]
+test_Act_correct$clinical_ActiveDisease=NULL
+
+
+for (cc in colnames(train_Act_correct)) {if (sum(is.na(train_Act_correct[[cc]])) > 0) {train_Act_correct[[cc]][is.na(train_Act_correct[[cc]])] <- median(train_Act_correct[[cc]],na.rm = T)}}
+for (cc in colnames(test_Act_correct)) {if (sum(is.na(test_Act_correct[[cc]])) > 0) {test_Act_correct[[cc]][is.na(test_Act_correct[[cc]])] <- median(test_Act_correct[[cc]],na.rm = T)}}
+
+partial_Act <- glm(IBD2 ~ ., data=train_Act_correct, family='binomial')
+model_Act_corr=codacore(train_Act_mtb, train_Act_pheno, offset=predict(partial_Act), logRatioType = 'balances', lambda = 1)
+
+partial_Act_AUC <- pROC::auc(pROC::roc(train_Act_pheno, predict(partial_Act), quiet=T))
+model_Act_corr_AUC <- model_Act_corr$ensemble[[1]]$AUC
+#cat("AUC gain:", round(100 * (model_Act_corr_AUC - partial_Act_AUC)), "%")
+
+Act_HatLogit <- predict(partial_Act, newdata = test_Act_correct) + predict(model_Act_corr, test_Act_mtb, logits=T)
+Act_Hat <- Act_HatLogit > 0
+test_Act_AUC_corr <- pROC::auc(pROC::roc(test_Act_pheno, Act_HatLogit, quiet=T))
+#cat("Test AUC:", round(100 * test_Act_AUC_corr), "%")
+```
+
+
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_Act_corr_AUC - partial_Act_AUC)), "%")
+cat("Test AUC:", round(100 * test_Act_AUC_corr), "%")
+print (model_Act_corr)
+plot(model_Act_corr)
+plotROC(model_Act_corr)
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_Act = cbind(train_Act_correct, getLogRatios(model_Act_corr))
+multimodelAct <- glm(IBD2 ~ ., data=with_ratio_Act, family='binomial')
+summary(multimodelAct)
+lrtest(partial_Act, multimodelAct)
+```
+
+
+
+7.1 Disease activity (active vs remission) based on taxa
+---
+
+
+```{r}
+#### WITH TAXA
+
+taxa_Act=taxa_cc
+bugs_Act=merge(ibd_phenos,taxa_Act,by="row.names")
+row.names(bugs_Act)=bugs_Act$Row.names
+bugs_Act$Row.names=NULL
+
+my_phenos_Act=bugs_Act[,c("host_Age","host_BMI","host_Sex","clinical_ActiveDisease")]
+my_phenos_Act$IBD2=0
+my_phenos_Act$IBD2[my_phenos_Act$clinical_ActiveDisease=="NotActive"]=0
+my_phenos_Act$IBD2[my_phenos_Act$clinical_ActiveDisease=="Active"]=1
+my_phenos_Act$IBD2=as.numeric(as.character(my_phenos_Act$IBD2))
+
+
+bugs_Act2=bugs_Act[,208:ncol(bugs_Act)]
+
+trainIndexAct <- sample(1:nrow(bugs_Act2), 0.75 * nrow(bugs_Act2))
+
+train_Act_correct=my_phenos_Act[trainIndexAct,]
+train_Act_pheno=my_phenos_Act$clinical_ActiveDisease[trainIndexAct]
+train_Act_bugs=bugs_Act2[trainIndexAct,]
+train_Act_correct$clinical_ActiveDisease=NULL
+
+test_Act_correct=my_phenos_Act[-trainIndexAct,]
+test_Act_pheno=my_phenos_Act$clinical_ActiveDisease[-trainIndexAct]
+test_Act_bugs=bugs_Act2[-trainIndexAct,]
+test_Act_correct$clinical_ActiveDisease=NULL
+
+for (cc in colnames(train_Act_correct)) {if (sum(is.na(train_Act_correct[[cc]])) > 0) {train_Act_correct[[cc]][is.na(train_Act_correct[[cc]])] <- median(train_Act_correct[[cc]],na.rm = T)}}
+for (cc in colnames(test_Act_correct)) {if (sum(is.na(test_Act_correct[[cc]])) > 0) {test_Act_correct[[cc]][is.na(test_Act_correct[[cc]])] <- median(test_Act_correct[[cc]],na.rm = T)}}
+
+
+partial_Act_bugs <- glm(IBD2 ~ ., data=train_Act_correct, family='binomial')
+model_Act_corr_bugs=codacore(train_Act_bugs, train_Act_pheno, offset=predict(partial_Act_bugs), logRatioType = 'balances', lambda = 1)
+
+partial_Act_AUC_bugs <- pROC::auc(pROC::roc(train_Act_pheno, predict(partial_Act_bugs), quiet=T))
+model_Act_corr_AUC_bugs <- model_Act_corr_bugs$ensemble[[1]]$AUC
+
+Act_HatLogit <- predict(partial_Act_bugs, newdata = test_Act_correct) + predict(model_Act_corr_bugs, test_Act_bugs, logits=T)
+Act_Hat <- Act_HatLogit > 0
+test_Act_AUC_corr_bugs <- pROC::auc(pROC::roc(test_Act_pheno, Act_HatLogit, quiet=T))
+```
+
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_Act_corr_AUC_bugs - partial_Act_AUC_bugs)), "%")
+cat("Test AUC:", round(100 * test_Act_AUC_corr_bugs), "%")
+print (model_Act_corr_bugs)
+plot(model_Act_corr_bugs)
+plotROC(model_Act_corr_bugs)
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_Act_bug = cbind(train_Act_correct, getLogRatios(model_Act_corr_bugs))
+multimodelAct_bug <- glm(IBD2 ~ ., data=with_ratio_Act_bug, family='binomial')
+summary(multimodelAct_bug)
+lrtest(partial_Act, multimodelAct_bug)
+```
+
+
+
+8. Disease location within patients with CD (colon vs ileum inflammation)
+---
+
+```{r}
+
+Loc_phenos=pheno_ibd[,c("CD_or_UC", "Location", "Past_ResectionAny", "Flare_in_future", "FutureResectionAny")]
+Loc_phenos=subset(Loc_phenos, Loc_phenos$CD_or_UC=="CD")
+Loc_phenos$Location[is.na(Loc_phenos$Location)]="Colon"
+
+ibd_phenos=subset(Loc_phenos,row.names(Loc_phenos)%ni%samples_resection)
+
+my_phenos=mtb_cc[,c("run_day_cat","Amount_sample_gram", "metabolon_Month_in_freezer","LC.COLUMN","host_Age","host_BMI","host_Sex","clinical_ChrA","clinical_HBD2", "clinical_Calprot200","clinical_BowelMovementADayDef")]
+ibd_phenos2=merge(ibd_phenos,my_phenos, by="row.names")
+row.names(ibd_phenos2)=ibd_phenos2$Row.names
+ibd_phenos2$Row.names=NULL
+metabolites_IBD=merge(ibd_phenos2,metabolites,by="row.names")
+row.names(metabolites_IBD)=metabolites_IBD$Row.names
+metabolites_IBD$Row.names=NULL
+
+my_phenos_Loc=metabolites_IBD[,c("host_Age","host_BMI","host_Sex","Location")]
+my_phenos_Loc$IBD2=0
+my_phenos_Loc$IBD2[my_phenos_Loc$Location=="Colon"]=0
+my_phenos_Loc$IBD2[my_phenos_Loc$Location=="Ileum"]=1
+my_phenos_Loc$IBD2=as.numeric(as.character(my_phenos_Loc$IBD2))
+metabolites_IBD=metabolites_IBD[,17:ncol(metabolites_IBD)]
+
+trainIndexLoc <- sample(1:nrow(metabolites_IBD), 0.75 * nrow(metabolites_IBD))
+
+train_Loc_correct=my_phenos_Loc[trainIndexLoc,]
+train_Loc_pheno=my_phenos_Loc$Location[trainIndexLoc]
+train_Loc_mtb=metabolites_IBD[trainIndexLoc,]
+train_Loc_correct$Location=NULL
+
+test_Loc_correct=my_phenos_Loc[-trainIndexLoc,]
+test_Loc_pheno=my_phenos_Loc$Location[-trainIndexLoc]
+test_Loc_mtb=metabolites_IBD[-trainIndexLoc,]
+test_Loc_correct$Location=NULL
+
+
+for (cc in colnames(train_Loc_correct)) {if (sum(is.na(train_Loc_correct[[cc]])) > 0) {train_Loc_correct[[cc]][is.na(train_Loc_correct[[cc]])] <- median(train_Loc_correct[[cc]],na.rm = T)}}
+for (cc in colnames(test_Loc_correct)) {if (sum(is.na(test_Loc_correct[[cc]])) > 0) {test_Loc_correct[[cc]][is.na(test_Loc_correct[[cc]])] <- median(test_Loc_correct[[cc]],na.rm = T)}}
+
+partial_Loc <- glm(IBD2 ~ ., data=train_Loc_correct, family='binomial')
+model_Loc_corr=codacore(train_Loc_mtb, train_Loc_pheno, offset=predict(partial_Loc), logRatioType = 'balances', lambda = 1)
+
+partial_Loc_AUC <- pROC::auc(pROC::roc(train_Loc_pheno, predict(partial_Loc), quiet=T))
+model_Loc_corr_AUC <- model_Loc_corr$ensemble[[1]]$AUC
+#cat("AUC gain:", round(100 * (model_Loc_corr_AUC - partial_Loc_AUC)), "%")
+
+
+Loc_HatLogit <- predict(partial_Loc, newdata = test_Loc_correct) + predict(model_Loc_corr, test_Loc_mtb, logits=T)
+Loc_Hat <- Loc_HatLogit > 0
+test_Loc_AUC_corr <- pROC::auc(pROC::roc(test_Loc_pheno, Loc_HatLogit, quiet=T))
+#cat("Test AUC:", round(100 * test_Loc_AUC_corr), "%")
+```
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_Loc_corr_AUC - partial_Loc_AUC)), "%")
+cat("Test AUC:", round(100 * test_Loc_AUC_corr), "%")
+print (model_Loc_corr)
+plot(model_Loc_corr)
+plotROC(model_Loc_corr)
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_loc = cbind(train_Loc_correct, getLogRatios(model_Loc_corr))
+multimodelloc <- glm(IBD2 ~ ., data=with_ratio_loc, family='binomial')
+summary(multimodelloc)
+lrtest(partial_Loc, multimodelloc)
+```
+
+
+
+
+8.1 Disease location within patients with CD (colon vs ileum inflammation) based on taxa
+---
+
+
+```{r}
+
+taxa_Loc=taxa_cc
+bugs_Loc=merge(ibd_phenos,taxa_Loc,by="row.names")
+row.names(bugs_Loc)=bugs_Loc$Row.names
+bugs_Loc$Row.names=NULL
+
+my_phenos_Loc=bugs_Loc[,c("host_Age","host_BMI","host_Sex","Location")]
+my_phenos_Loc$IBD2=0
+my_phenos_Loc$IBD2[my_phenos_Loc$Location=="Colon"]=0
+my_phenos_Loc$IBD2[my_phenos_Loc$Location=="Ileum"]=1
+my_phenos_Loc$IBD2=as.numeric(as.character(my_phenos_Loc$IBD2))
+
+
+bugs_Loc2=bugs_Loc[,208:ncol(bugs_Loc)]
+
+trainIndexLoc <- sample(1:nrow(bugs_Loc2), 0.75 * nrow(bugs_Loc2))
+
+train_Loc_correct=my_phenos_Loc[trainIndexLoc,]
+train_Loc_pheno=my_phenos_Loc$Location[trainIndexLoc]
+train_Loc_bugs=bugs_Loc2[trainIndexLoc,]
+train_Loc_correct$Location=NULL
+
+test_Loc_correct=my_phenos_Loc[-trainIndexLoc,]
+test_Loc_pheno=my_phenos_Loc$Location[-trainIndexLoc]
+test_Loc_bugs=bugs_Loc2[-trainIndexLoc,]
+test_Loc_correct$Location=NULL
+
+for (cc in colnames(train_Loc_correct)) {if (sum(is.na(train_Loc_correct[[cc]])) > 0) {train_Loc_correct[[cc]][is.na(train_Loc_correct[[cc]])] <- median(train_Loc_correct[[cc]],na.rm = T)}}
+for (cc in colnames(test_Loc_correct)) {if (sum(is.na(test_Loc_correct[[cc]])) > 0) {test_Loc_correct[[cc]][is.na(test_Loc_correct[[cc]])] <- median(test_Loc_correct[[cc]],na.rm = T)}}
+
+partial_Loc_bugs <- glm(IBD2 ~ ., data=train_Loc_correct, family='binomial')
+model_Loc_corr_bugs=codacore(train_Loc_bugs, train_Loc_pheno, offset=predict(partial_Loc_bugs), logRatioType = 'balances', lambda = 1)
+
+partial_Loc_AUC_bugs <- pROC::auc(pROC::roc(train_Loc_pheno, predict(partial_Loc_bugs), quiet=T))
+model_Loc_corr_AUC_bugs <- model_Loc_corr_bugs$ensemble[[1]]$AUC
+#cat("AUC gain:", round(100 * (model_Loc_corr_AUC_bugs - partial_Loc_AUC_bugs)), "%")
+
+Loc_HatLogit <- predict(partial_Loc_bugs, newdata = test_Loc_correct) + predict(model_Loc_corr_bugs, test_Loc_bugs, logits=T)
+Loc_Hat <- Loc_HatLogit > 0
+test_Loc_AUC_corr_bugs <- pROC::auc(pROC::roc(test_Loc_pheno, Loc_HatLogit, quiet=T))
+#cat("Test AUC:", round(100 * test_Loc_AUC_corr_bugs), "%")
+```
+
+```{r, echo=F}
+cat("AUC gain:", round(100 * (model_Loc_corr_AUC_bugs - partial_Loc_AUC_bugs)), "%")
+cat("Test AUC:", round(100 * test_Loc_AUC_corr_bugs), "%")
+print (model_Loc_corr_bugs)
+plot(model_Loc_corr_bugs)
+plotROC(model_Loc_corr_bugs)
+```
+
+```{r, echo=F}
+cat("Compare models with or without the ratios")
+
+with_ratio_loc_bug = cbind(train_Loc_correct, getLogRatios(model_Loc_corr_bugs))
+multimodelloc_bug <- glm(IBD2 ~ ., data=with_ratio_loc_bug, family='binomial')
+summary(multimodelloc)
+lrtest(partial_Loc_bugs, multimodelloc_bug)
+```
+
+
