@@ -1,25 +1,36 @@
 Calculate metabolic ratios
 ====
-
-a. Bile-acids
+  
+  a. Bile-acids
 ===
-
+  
 #Select primary and secondary bile acids
-
 PBA=rownames(annot)[annot$SUB.PATHWAY=="Primary Bile Acid Metabolism"]
 SBA=rownames(annot)[annot$SUB.PATHWAY=="Secondary Bile Acid Metabolism"]
 BA=all_new_ID_raw[,colnames(all_new_ID_raw) %in% PBA | colnames(all_new_ID_raw) %in% SBA]
-BA_norm=BA
-BA_norm[is.na(BA_norm)]=min(BA_norm,na.rm = T)/2
+PBA2=all_new_ID_raw[,colnames(all_new_ID_raw) %in% PBA]
+SBA2=all_new_ID_raw[,colnames(all_new_ID_raw) %in% SBA]
+
+#Replace NA's for a very small value (half of the minimum in the matrix)
+PBA2[is.na(PBA2)]=min(SBA2,na.rm = T)/2
+SBA2[is.na(SBA2)]=min(SBA2,na.rm = T)/2
+
+# Calculate total PBA and SBA
+SBA2$SBA=rowSums(SBA2)
+PBA2$PBA=rowSums(PBA2)
+
+#Merge both datasets
+
+BA_norm=rbind(PBA2,SBA2)
 
 #Calculate ratios
 #SBA/PBA => DCA/CA || LCA/CDCA || LCA / UDCA
-
+BA_norm$R0_SBA_vs_PBA=scale(log(BA_norm$SBA / BA_norm$PBA))
 BA_norm$R1_DCA_vs_CA=scale(log(BA_norm$deoxycholate / BA_norm$cholate))
 BA_norm$R2_LCA_vs_CDCA=scale(log(BA_norm$lithocholate / BA_norm$chenodeoxycholate))
 BA_norm$R3_UCDA_vs_CDCA=scale(log(BA_norm$ursodeoxycholate / BA_norm$chenodeoxycholate ))
-#Conjugated/Unconjugated => (TCA + GCA) / CA || (TCDCA + GCDCA) / CDCA 
 
+#Conjugated/Unconjugated => (TCA + GCA) / CA || (TCDCA + GCDCA) / CDCA 
 BA_norm$R4_Conju_vs_Unconj_CA=scale(log((BA_norm$glycocholate+BA_norm$taurocholate) /BA_norm$cholate))
 BA_norm$R5_Conju_vs_Unconj_CDCA=scale(log((BA_norm$glycochenodeoxycholate+BA_norm$taurochenodeoxycholate) /BA_norm$chenodeoxycholate))
 BA_norm$R6_Conju_vs_Unconj_LCA=scale(log((BA_norm$glycolithocholate+BA_norm$taurolithocholate) /BA_norm$lithocholate))
@@ -31,48 +42,44 @@ regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host
 case_control_test=cc_pheno6[,c(regressors, "IBD", "ibd_Diagnosis")]
 
 BA_p=merge(case_control_test,BA_norm,by="row.names")
+row.names(BA_p)=BA_p$Row.names
+BA_p$Row.names=NULL
 BA_p=subset(BA_p,BA_p$ibd_Diagnosis!="IBDU")
 BA_p$ibd_Diagnosis=as.character(BA_p$ibd_Diagnosis)
 
+BA_p=BA_p[,c(1:32,43,76:85)]
+BA_p$PBA=scale(log(BA_p$PBA))
+BA_p$SBA=scale(log(BA_p$SBA))
+BAx=q_mtb[,colnames(q_mtb) %in% PBA | colnames(q_mtb) %in% SBA]
 
-BA_p$cholate=scale(log(BA_p$cholate))
-BA_p$deoxycholate=scale(log(BA_p$deoxycholate))
-BA_p$lithocholate=scale(log(BA_p$lithocholate))
-BA_p$chenodeoxycholate=scale(log(BA_p$chenodeoxycholate))
-BA_p$ursodeoxycholate=scale(log(BA_p$ursodeoxycholate))
-
-row.names(BA_p)=BA_p$Row.names
-BA_p$Row.names=NULL
-
-BA_p=BA_p[,c(1:33,75:82)]
+BA_p1=merge(BA_p,BAx, by="row.names")
+row.names(BA_p1)=BA_p1$Row.names
+BA_p1$Row.names=NULL
 
 #Regress cofounders 
-
-for (cc in colnames(BA_p)) {if (sum(is.na(BA_p[[cc]])) > 0) {BA_p[[cc]][is.na(BA_p[[cc]])] <- median(BA_p[[cc]],na.rm = T)}}
-BA_r=matrix(ncol=8, nrow=nrow(BA_p))
+colnames(BA_p1)=make.names(colnames(BA_p1))
+for (cc in colnames(BA_p1)) {if (sum(is.na(BA_p1[[cc]])) > 0) {BA_p1[[cc]][is.na(BA_p1[[cc]])] <- median(BA_p1[[cc]],na.rm = T)}}
+BA_r=matrix(ncol=28, nrow=nrow(BA_p1))
 
 n=1
-for (i in 34:ncol(BA_p)){
-  my_trait=colnames(BA_p)[i]
+for (i in 33:ncol(BA_p1)){
+  my_trait=colnames(BA_p1)[i]
   my_f=as.formula(paste(my_trait, paste(regressors, collapse = " + "), sep = " ~ "))
-  my_lm=lm(my_f,data = BA_p)
+  my_lm=lm(my_f,data = BA_p1)
   BA_r[,n] = my_lm$residuals
- n=n+1
+  n=n+1
 }
 BA_r=as.data.frame(BA_r)
-rownames(BA_r)=row.names(BA_p)
-colnames(BA_r)=colnames(BA_p)[34:ncol(BA_p)]
+rownames(BA_r)=row.names(BA_p1)
+colnames(BA_r)=colnames(BA_p1)[33:ncol(BA_p1)]
 
 
-
-my_sel=phenos_ibd[,c("ibd_Diagnosis","ibd_ResectionIlealCecalAny", "ibd_ResectionIlealAny", "ibd_DiseaseLocation","ibd_ActiveDisease")]
-
-
+my_sel=phenos_ibd[,c("ibd_Diagnosis","ibd_ResectionIlealCecalAny", "ibd_ResectionIlealAny", "ibd_DiseaseLocation","ibd_ActiveDisease","ibd_IleocecalValveInSitu")]
 my_sel$Resection_ileum="3_CD_intact_ileum"
 my_sel$Resection_ileum[my_sel$ibd_ResectionIlealCecalAny=="yes" | my_sel$ibd_ResectionIlealAny=="yes"]="4_CD_resection_in_ileum"
 my_sel$Resection_ileum[my_sel$ibd_Diagnosis=="UC" ]="2_UC"
 
-my_sel$Infl="NA"
+my_sel$Infl=NA
 my_sel$Infl[my_sel$ibd_Diagnosis=="UC" & my_sel$ibd_ActiveDisease=="NotActive"]="A_UC_not_active"
 my_sel$Infl[my_sel$ibd_Diagnosis=="UC" & my_sel$ibd_ActiveDisease=="Active"]="B_UC_active"
 my_sel$Infl[my_sel$ibd_Diagnosis=="CD" & my_sel$ibd_ActiveDisease=="NotActive" & my_sel$ibd_DiseaseLocation=="colon" ]="C_CD_Colon_Remission"
@@ -85,7 +92,6 @@ BA_p2=merge(my_sel2, BA_r, by="row.names", all.y=T)
 
 BA_p2$Resection_ileum[is.na(BA_p2$Resection_ileum)]="1_Controls"
 BA_p2$Infl[BA_p2$Resection_ileum=="1_Controls"]="A_Controls"
-
 
 
 flag=1
@@ -108,9 +114,6 @@ associations_BA=associations_BA[complete.cases(associations_BA$value),]
 associations_BA$FDR=p.adjust(associations_BA$value, method="BH")
 associations_BA$Bonferroni=p.adjust(associations_BA$value, method="bonferroni") 
 ggplot (BA_p2, aes(Resection_ileum, R8_Conju_vs_Unconj_DCA, fill=Resection_ileum))+ geom_violin(alpha=0.8) + geom_jitter(height = 0, width = 0.1, alpha=0.4) + geom_boxplot(width=0.1, fill="white", outlier.alpha = 0) + theme_bw() + scale_fill_manual(values = c("gray80", "darkolivegreen3", "mediumpurple", "purple4"))
-
-
-
 
 
 b. Tryptophan metabolites and PUFA ratios
