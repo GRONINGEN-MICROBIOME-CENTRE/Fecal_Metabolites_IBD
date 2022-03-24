@@ -82,20 +82,18 @@ for (i in 116:ncol(metabolite_pca_and_taxa)){
 __Calculate PCA based on filtered clr relative abundaces__
 
 
-print(paste("Number of species used for PCA analysis:", ncol(taxa_filt)))
+print(paste("Number of species used for PCoA analysis:", ncol(taxa_filt)))
 
-pca_clr= prcomp(taxa_filt,scale. = T, center = T)
-cmp_clr=as.data.frame(pca_clr$x[,1:5])
-cmp_clr2=merge(cc_pheno2,cmp_clr,by="row.names")
+#Euclidean distances on clr transformed values = Aitchison distance
+my_dist=vegdist(taxa_filt, method = "euclidean")
+#PCoA analyses
+mypcoa=cmdscale(my_dist, k = 5)
+colnames(mypcoa)=c("PC1","PC2","PC3","PC4","PC5")
+mypcoa2=cmdscale(my_dist, k = 5, eig = T)
+round(mypcoa2$eig*100/sum(mypcoa2$eig),2)[1:5]
+cmp_clr3=merge(cc_pheno2,mypcoa,by="row.names")
 
-v_exp_taxa = pca_clr$sdev^2
-prop_v_exp_taxa= data.frame( PC=1:length(v_exp_taxa),perc= 100*(v_exp_taxa / sum(v_exp_taxa)))
-
-#get PCA loading contributors
-get_vars_taxa=get_pca_var(pca_clr)
-pca_contribution_taxa=as.data.frame(get_vars_taxa$contrib)
-ggplot(cmp_clr2, aes(PC1,PC2, fill=ibd_Diagnosis)) + geom_point(size=3, pch=21) + theme_bw() + scale_fill_manual(values =c("purple","black","pink2" ,"darkolivegreen3"))
-
+ggplot(cmp_clr3, aes(PC1,PC2, fill=ibd_Diagnosis)) + geom_point(size=3, pch=21) + theme_bw() + scale_fill_manual(values =c("purple","black","pink2" ,"darkolivegreen3"))
 
 
 6. Clustering metabolites
