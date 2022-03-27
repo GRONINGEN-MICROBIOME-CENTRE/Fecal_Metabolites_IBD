@@ -95,8 +95,43 @@ cmp_clr3=merge(cc_pheno2,mypcoa,by="row.names")
 
 ggplot(cmp_clr3, aes(PC1,PC2, fill=ibd_Diagnosis)) + geom_point(size=3, pch=21) + theme_bw() + scale_fill_manual(values =c("purple","black","pink2" ,"darkolivegreen3"))
 
+6.Calculate dysbiotic score
+===
 
-6. Clustering metabolites
+#Calculate dysbiotic score: adapted from Lloyd-Price et al. Nature 2019 (https://bitbucket.org/biobakery/hmp2_analysis/src/master/common/disease_activity.r)
+
+my_dist_matrix=as.matrix(my_dist)
+#ref_set=rownames(cc_pheno2)[cc_pheno2$ibd_Diagnosis=="Control"]
+#Take non-IBD controls as a reference group to calculate the median distance
+ref_set=my_dist_matrix[,rownames(cc_pheno2)[cc_pheno2$ibd_Diagnosis=="Control"]]
+dysbiosis_score=as.data.frame(ref_set)
+dysbiosis_score_na=dysbiosis_score
+#To avoid calculating the distance of a sample including the sample itself replace 0 distances for NAs
+dysbiosis_score_na[dysbiosis_score_na==0]=NA
+#Calculate median distance of each sample relative to the non-IBD controls. 
+dysbiosis_score_na$row_median = apply(dysbiosis_score, 1, median,na.rm=TRUE)
+dysbiosis_score2=dysbiosis_score_na[,"row_median", drop=F]
+
+#Merge score with phenotypes
+dysbiosis_score_pheno=merge(cc_pheno2,dysbiosis_score2, by="row.names")
+dysbiosis_score_pheno$IBD=dysbiosis_score_pheno$ibd_Diagnosis
+dysbiosis_score_pheno$IBD[dysbiosis_score_pheno$ibd_Diagnosis!="Control"]="IBD"
+
+#Define dysbiosis as the 95th quantile of the median distance of non-IBD samples 
+dysbiosis_threshold=quantile(dysbiosis_score_pheno$row_median[dysbiosis_score_pheno$IBD=="Control"], 0.95)
+dysbiosis_score_pheno$dysbiotic="no"
+dysbiosis_score_pheno$dysbiotic[dysbiosis_score_pheno$row_median>=dysbiosis_threshold]="yes"
+
+row.names(dysbiosis_score_pheno)=dysbiosis_score_pheno$Row.names
+dysbiosis_score_pheno$Row.names=NULL
+
+#Merge with PCoA coordinates and plot
+cmp_clr3.d=merge(dysbiosis_score_pheno,mypcoa,by="row.names")
+ggplot(cmp_clr3.d, aes(PC1,PC2, fill=IBD)) + geom_point(size=3, pch=21) + theme_bw() + scale_fill_manual(values =c("gray80","red"))
+ggplot(cmp_clr3.d, aes(PC1,PC2, fill=dysbiotic)) + geom_point(size=3, pch=21) + theme_bw() + scale_fill_manual(values =c("gray80","purple"))
+
+
+7. Clustering metabolites
 ===
 
 
