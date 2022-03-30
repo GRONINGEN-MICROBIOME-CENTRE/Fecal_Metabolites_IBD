@@ -13,7 +13,7 @@ c) Host phenotypes: Information about the host (age,sex,BMI, diet, etc.). This c
 d) Experiment variables: Different technical variables from the untargetted metabolic experiments. We will use this information as a potential counfounding factors. 
 
 
-e) Metagenomics taxa: MetaPhlans profiles (v2.9)
+e) Metagenomics taxa: MetaPhlans profiles (v3.0)
 
 
 f) Pathway annotation provided by Metabolon
