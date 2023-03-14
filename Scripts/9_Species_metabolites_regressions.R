@@ -1,477 +1,367 @@
 Phenotype association to metabolites
 ===
 
-Testing each metabolite~ taxa association using the several techinicals and host charactersitic covariates( age, sex, BMI, bowel movements a day,day measuring (run day), amount of sample, month sample in a freezer) and intestinal resections (any, yes/no) within cohort (controls, CD and UC). 
+#load("~/Desktop/IBD_metabolomics_2022/3.Workspace/General_and_regressions.RData")
+library(emmeans)
+library(tidyverse)
 
-Tests: 
-
-a. Metabolites (>70% samples) vs taxa in controls (linear regression). Taxa coded as presence/absence (1/0)
-b. Metabolites (>70% samples) vs taxa in controls (linear regression). Taxa abundance (missing taxa = NA)
-c. Metabolites prevalence (Metabolites <70% samples coded as 0/1) vs taxa in controls (logistic regression). Taxa abundance (missing taxa = NA)
-
-d. Metabolites (>70% samples) vs taxa in CD (linear regression). Taxa coded as presence/absence (1/0)
-e. Metabolites (>70% samples) vs taxa in CD (linear regression). Taxa abundance (missing taxa = NA)
-f. Metabolites prevalence (Metabolites <70% samples coded as 0/1) vs taxa in CD (logistic regression). Taxa abundance (missing taxa = NA)
-
-g. Metabolites (>70% samples) vs taxa in UC (linear regression). Taxa coded as presence/absence (1/0)
-h. Metabolites (>70% samples) vs taxa in UC (linear regression). Taxa abundance (missing taxa = NA)
-i. Metabolites prevalence (Metabolites <70% samples coded as 0/1) vs taxa in UC (logistic regression). Taxa abundance (missing taxa = NA)
-
-
-
-a. Controls: Code bacteria as presence / absence(1/0) value
-==
-
-taxa3=taxa2
-taxa3[taxa3>0]=1
-taxa3=taxa3[row.names(taxa3)%in%row.names(taxa_filt),]
-taxa3=taxa3[,colnames(taxa3)%in%colnames(taxa_filt)]
-colnames(taxa3)=make.names(colnames(taxa3))
-
-#controls_phenos=merge(run_day,controls_phenos,by="row.names")
-#row.names(controls_phenos)=controls_phenos$Row.names
-#controls_phenos$Row.names=NULL
 
 regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef",colnames(run_day))
 my_phenos=controls_phenos[,c(regressors)]
-
-controls_species=merge(my_phenos,taxa3, by="row.names")
-row.names(controls_species)=controls_species$Row.names
-controls_species$Row.names=NULL
-
+my_phenos$clinical_ResectionAny=1
+my_phenos=my_phenos[,c(1:7,28,8:27)]
+controls_species2=merge(my_phenos,taxa3, by="row.names")
+row.names(controls_species2)=controls_species2$Row.names
+controls_species2$Row.names=NULL
 q_mtbx2=q_mtbx
 colnames(q_mtbx2)=make.names(colnames(q_mtbx2))
+controls_species2=merge(controls_species2,q_mtbx2, by="row.names")
+row.names(controls_species2)=controls_species2$Row.names
+controls_species2$Row.names=NULL
+controls_species2$cohort="aControl"
+cd_specie2=cd_specie
+cd_specie2$cohort="CD"
+uc_specie2=uc_specie
+uc_specie2$cohort="UC"
 
-controls_species=merge(controls_species,q_mtbx2, by="row.names")
-row.names(controls_species)=controls_species$Row.names
-controls_species$Row.names=NULL
+models_for_interac=bind_rows(controls_species2, uc_specie2, cd_specie2)
+regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny",colnames(run_day), "cohort3")
+
+models_for_interac$Amount_sample_gram=scale(models_for_interac$Amount_sample_gram)[,1]
+models_for_interac$metabolon_Month_in_freezer=scale(models_for_interac$metabolon_Month_in_freezer)[,1]
+models_for_interac$host_Age=scale(models_for_interac$host_Age)[,1]
+models_for_interac$host_BMI=scale(models_for_interac$host_BMI)[,1]
+models_for_interac$clinical_BowelMovementADayDef=scale(models_for_interac$clinical_BowelMovementADayDef)[,1]
+
+
+test_metabolites=colnames(models_for_interac)[138:999]
+test_bugs=colnames(models_for_interac)[29:137]
+
+####################
+
+# Test relation between metabolite and bacteria presence/absence 
+# Model 0: y ~ covariates + bacteria + dysbiosis
+# Model 1: y ~ covariates + bacteria * dysbiosis
+
+###################
+
+dysbiosis_score3=dysbiosis_score_pheno[,c("dysbiotic"), drop=F]
+models_for_interac=merge(dysbiosis_score3,models_for_interac,by="row.names")
+row.names(models_for_interac)=models_for_interac$Row.names
+models_for_interac$Row.names=NULL
 
 flag=1
-for ( i in 1:136) {
-  my_pheno=colnames(controls_species)[i]
+for ( i in test_bugs) {
+  my_pheno=i
   if (my_pheno %in% regressors) {
     print (paste("Skipping phenotype:",my_pheno))
   } else {
     print (paste("Testing:",my_pheno))
-    for (a in 137:ncol(controls_species)){
-      my_trait=colnames(controls_species)[a]
-      my_uni_test=controls_species[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
+    for (a in test_metabolites){
+      my_trait=a
+      my_uni_test=models_for_interac[,c(regressors,my_pheno,my_trait, "dysbiotic")]
+      my_preds=c(regressors,my_pheno, "dysbiotic")
+      interaction_factor=paste(my_pheno,"dysbiotic",sep="*")
+      my_f0=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
+      my_lm0=summary(lm(my_f0,data = my_uni_test ))
+      my_lm0_coef=as.data.frame(my_lm0$coefficients)
+      my_f=as.formula(paste(my_trait, paste(paste(regressors, collapse = " + "), interaction_factor, sep="+"), sep = " ~ "))
       my_samples=nrow(my_uni_test)
-      my_lm=summary(lm(my_f,data = my_uni_test ))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
+      my_lm=lm(my_f,data = my_uni_test )
+      my_lm_sum=summary(my_lm)
+      rg.nuis = ref_grid(my_lm, non.nuisance = c("dysbiotic", my_pheno))
+      my_f2=as.formula(paste("pairwise", paste("dysbiotic",my_pheno, sep = "*"), sep = "~"))
+      my_em=emmeans(rg.nuis, specs = my_f2, adjust="none")
+      my_contrasts=as.data.frame(my_em$contrasts)
+      my_lm_coef=as.data.frame(my_lm_sum$coefficients)
+      my_first_result=data.frame(Metabolite=my_trait, 
+                                 My_Bug=my_pheno, 
+                                 combined_beta=my_lm0_coef[nrow(my_lm0_coef)-1,1],
+                                 combined_pval=my_lm0_coef[nrow(my_lm0_coef)-1,4],
+                                 beta_interaction=my_lm_coef[nrow(my_lm_coef),1],
+                                 p_val_interaction=my_lm_coef[nrow(my_lm_coef),4],
+                                 direction_eubiosis=my_contrasts[2,2]*-1,
+                                 p_val_eubiosis=my_contrasts[2,6],
+                                 direction_dysbiosis=my_contrasts[5,2]*-1,
+                                 p_val_dysbiosis=my_contrasts[5,6])
       if (flag!=1){
-          my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
+        my_final_result=rbind(my_final_result,my_first_result)
       }else{
-          my_univariate_results=my_lm_pheno
-          flag=5
-      }
-    }
-  }
-}
-
-associations_controls_sp=my_univariate_results
-associations_controls$FDR=p.adjust(associations_controls$`Pr(>|t|)`,method = "BH")
-associations_controls$Bonferroni=p.adjust(associations_controls$`Pr(>|t|)`,method = "bonferroni")
-
-associations_qp=merge(associations_qp,annot, by.x="metabolite", by.y = "for_merg", all.x=T)
-
-
-b. Controls: Test associations bacteria-metabolites in controls but without bacterial zeros (bacterial 0 => NAs, CLR transformed values as non-zeros values)
-==
-
-taxa_filt2=taxa_filt
-colnames(taxa_filt2)=make.names(colnames(taxa_filt2))
-table(row.names(taxa3)==row.names(taxa_filt2))
-table(colnames(taxa3)==colnames(taxa_filt2))
-taxa4=taxa3*taxa_filt2
-taxa4[taxa4==0]=NA
-
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef")
-my_phenos=controls_phenos[,c(regressors)]
-
-
-controls_species_lin=merge(my_phenos,taxa4, by="row.names")
-row.names(controls_species_lin)=controls_species_lin$Row.names
-controls_species_lin$Row.names=NULL
-
-controls_species_lin=merge(controls_species_lin,q_mtbx2, by="row.names")
-row.names(controls_species_lin)=controls_species_lin$Row.names
-controls_species_lin$Row.names=NULL
-
-
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef")
-
-flag=1
-for ( i in 1:116) {
-  my_pheno=colnames(controls_species_lin)[i]
-  if (my_pheno %in% regressors) {
-    print (paste("Skipping phenotype:",my_pheno))
-  } else {
-    print (paste("Testing:",my_pheno))
-    for (a in 117:ncol(controls_species_lin)){
-      my_trait=colnames(controls_species_lin)[a]
-      my_uni_test=controls_species_lin[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
-      my_samples=nrow(my_uni_test)
-      my_lm=summary(lm(my_f,data = my_uni_test ))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
-      if (flag!=1){
-          my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
-      }else{
-          my_univariate_results=my_lm_pheno
-          flag=5
-      }
-    }
-  }
-}
-
-associations_controls_nz2=my_univariate_results
-associations_controls_nz2$FDR=p.adjust(associations_controls_nz2$`Pr(>|t|)`,method = "BH")
-associations_controls_nz2$Bonferroni=p.adjust(associations_controls_nz2$`Pr(>|t|)`,method = "bonferroni")
-
-c. Controls: Presence of species is related to presence of metabolites 
-===
-
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef")
-my_phenos=controls_phenos[,c(regressors)]
-
-controls_species=merge(my_phenos,my_taxa4, by="row.names")
-row.names(controls_species)=controls_species$Row.names
-controls_species$Row.names=NULL
-
-controls_species_prev2=merge(controls_species,bi_mtb2, by="row.names")
-row.names(controls_species_prev2)=controls_species_prev2$Row.names
-controls_species_prev2$Row.names=NULL
-
-flag=1
-for ( i in 1:116) {
-  my_pheno=colnames(controls_species_prev2)[i]
-  if (my_pheno %in% regressors) {
-    print (paste("Skipping phenotype:",my_pheno))
-  } else {
-    print (paste("Testing:",my_pheno))
-    for (a in 117:ncol( controls_species_prev2)){
-      my_trait=colnames(controls_species_prev2)[a]
-      my_uni_test=controls_species_prev2[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
-      my_samples=nrow(my_uni_test)
-      my_lm=summary(glm(my_f, family = binomial(link="logit"), data =my_uni_test))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
-      if (flag!=1){
-        my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
-      }else{
-        my_univariate_results=my_lm_pheno
+        my_final_result=my_first_result
         flag=5
       }
     }
   }
 }
 
-associations_cnt_sp_prev_mtb_prev=my_univariate_results
+# Multiple testing correction and save
+my_final_result$same_direction="no"
+my_final_result$same_direction[my_final_result$Beta_bug>0 & my_final_result$direction_eubiosis>0 & my_final_result$direction_dysbiosis>0]="yes"
+my_final_result$same_direction[my_final_result$Beta_bug<0 & my_final_result$direction_eubiosis<0 & my_final_result$direction_dysbiosis<0 ]="yes"
+my_final_result$FDR_combined=p.adjust(my_final_result$p_val_bug, method = "BH")
+my_final_result$FDR_eubiosis=p.adjust(my_final_result$p_val_eubiosis, method = "BH")
+my_final_result$FDR_dysbiosis=p.adjust(my_final_result$p_val_dysbiosis, method = "BH")
+my_final_result$FDR_interaction=p.adjust(my_final_result$p_val_interaction, method = "BH")
+write.table(my_final_result, "~/Desktop/IBD_metabolomics_2022/7.2.Rebuttal-Gut/Bug-metabolite_interaction_bi.txt", sep = "\t", quote = F)
 
 
 
-d. Test CD: Presence of species is associated to metabolites levels
-===
+####################
 
-#Test only in CD
-regressors=c("clinical_Diagnosis","LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny",colnames(run_day))
+# Test relation between metabolite and bacteria abundances (zeroes are coded as NA's)
+# Model 0: y ~ covariates + bacteria + dysbiosis
+# Model 1: y ~ covariates + bacteria * dysbiosis
 
-my_phenos=ibd_test_phenos[,c(regressors)]
+###################
 
-my_phenos_cd=merge(my_phenos,taxa3, by="row.names")
-row.names(my_phenos_cd)=my_phenos_cd$Row.names
-my_phenos_cd$Row.names=NULL
 
-ibd_species=merge(my_phenos_cd,q_mtbx2, by="row.names")
-row.names(ibd_species)=ibd_species$Row.names
-ibd_species$Row.names=NULL
+controls_species_lin2=controls_species_lin
+controls_species_lin2$clinical_ResectionAny=1
+controls_species_lin2=controls_species_lin2[,c(1:7,979,8:978)]
+controls_species_lin2$cohort="aControl"
+cd_specie_lin2=cd_specie_lin
+cd_specie_lin2$cohort="CD"
+uc_specie_lin2=uc_specie_lin
+uc_specie_lin2$cohort="UC"
+models_for_interac_lin=bind_rows(controls_species_lin2, uc_specie_lin2, cd_specie_lin2)
+regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny", "cohort")
 
-cd_specie=subset(ibd_species, ibd_species$clinical_Diagnosis=="2")
-cd_specie$clinical_Diagnosis=NULL
+models_for_interac_lin$Amount_sample_gram=scale(models_for_interac_lin$Amount_sample_gram)[,1]
+models_for_interac_lin$metabolon_Month_in_freezer=scale(models_for_interac_lin$metabolon_Month_in_freezer)[,1]
+models_for_interac_lin$host_Age=scale(models_for_interac_lin$host_Age)[,1]
+models_for_interac_lin$host_BMI=scale(models_for_interac_lin$host_BMI)[,1]
+models_for_interac_lin$clinical_BowelMovementADayDef=scale(models_for_interac_lin$clinical_BowelMovementADayDef)[,1]
+models_for_interac_lin=merge(dysbiosis_score3,models_for_interac_lin,by="row.names")
+row.names(models_for_interac_lin)=models_for_interac_lin$Row.names
+models_for_interac_lin$Row.names=NULL
 
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny",colnames(run_day))
 
 flag=1
-for ( i in 1:137) {
-  my_pheno=colnames(cd_specie)[i]
+for ( i in test_bugs) {
+  my_pheno=i
   if (my_pheno %in% regressors) {
     print (paste("Skipping phenotype:",my_pheno))
   } else {
     print (paste("Testing:",my_pheno))
-    for (a in 138:ncol(cd_specie)){
-      my_trait=colnames(cd_specie)[a]
-      my_uni_test=cd_specie[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
+    for (a in test_metabolites){
+      my_trait=a
+      my_uni_test=models_for_interac_lin[,c(regressors,my_pheno,my_trait, "dysbiotic")]
+      my_preds=c(regressors,my_pheno, "dysbiotic")
+      interaction_factor=paste(my_pheno,"dysbiotic",sep="*")
+      my_f0=as.formula(paste(my_trait, paste(regressors, collapse = " + "), sep = " ~ "))
+      my_lm0=summary(lm(my_f0,data = my_uni_test ))
+      my_lm0_coef=as.data.frame(my_lm0$coefficients)
+      my_f=as.formula(paste(my_trait, paste(paste(regressors, collapse = " + "), interaction_factor, sep="+"), sep = " ~ "))
       my_samples=nrow(my_uni_test)
-      my_lm=summary(lm(my_f,data = my_uni_test ))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
+      my_lm=lm(my_f,data = my_uni_test )
+      my_lm_sum=summary(my_lm)
+      rg.nuis = ref_grid(my_lm, non.nuisance = c("dysbiotic", my_pheno))
+      my_em=test(emtrends(my_lm, pairwise ~ dysbiotic, var = my_pheno, adjust="none"))
+      my_trends=as.data.frame(my_em$emtrends)
+      my_lm_coef=as.data.frame(my_lm_sum$coefficients)
+      #Warning, check if betas and pvalues are extracted corrected before running
+      my_first_result=data.frame(Metabolite=my_trait, 
+                                 My_Bug=my_pheno, 
+                                 combined_beta=my_lm0_coef[nrow(my_lm0_coef)-1,1],
+                                 combined_pval=my_lm0_coef[nrow(my_lm0_coef)-1,4],
+                                 beta_interaction=my_lm_coef[nrow(my_lm_coef),1],
+                                 p_val_interaction=my_lm_coef[nrow(my_lm_coef),4],
+                                 direction_eubiosis=my_trends[1,2],
+                                 p_val_eubiosis=my_trends[1,6],
+                                 direction_dysbiosis=my_trends[2,2],
+                                 p_val_dysbiosis=my_trends[2,6])
       if (flag!=1){
-          my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
+        my_final_result_lin=rbind(my_final_result_lin,my_first_result)
       }else{
-          my_univariate_results=my_lm_pheno
-          flag=5
-      }
-    }
-  }
-}
-
-associations_cd_sp_prev=my_univariate_results
-associations_cd_sp_prev$FDR=p.adjust(associations_cd_sp_prev$`Pr(>|t|)`,method = "BH")
-associations_cd_sp_prev$Bonferroni=p.adjust(associations_cd_sp_prev$`Pr(>|t|)`,method = "bonferroni")
-
-e. Test CD: Abundance of specie is related to metabolite levels
-==
-
-
-regressors=c("clinical_Diagnosis","LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny")
-my_phenos=ibd_test_phenos[,c(regressors)]
-
-ibd_species_lin=merge(my_phenos,taxa4, by="row.names")
-row.names(ibd_species_lin)=ibd_species_lin$Row.names
-ibd_species_lin$Row.names=NULL
-
-ibd_species_lin=merge(ibd_species_lin,q_mtbx2, by="row.names")
-row.names(ibd_species_lin)=ibd_species_lin$Row.names
-ibd_species_lin$Row.names=NULL
-
-cd_specie_lin=subset(ibd_species_lin, ibd_species_lin$clinical_Diagnosis=="2")
-cd_specie_lin$clinical_Diagnosis=NULL
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny")
-
-
-flag=1
-for ( i in 1:117) {
-  my_pheno=colnames(cd_specie_lin)[i]
-  if (my_pheno %in% regressors) {
-    print (paste("Skipping phenotype:",my_pheno))
-  } else {
-    print (paste("Testing:",my_pheno))
-    for (a in 118:ncol(cd_specie_lin)){
-      my_trait=colnames(cd_specie_lin)[a]
-      my_uni_test=cd_specie_lin[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
-      my_samples=nrow(my_uni_test)
-      my_lm=summary(lm(my_f,data = my_uni_test ))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
-      if (flag!=1){
-          my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
-      }else{
-          my_univariate_results=my_lm_pheno
-          flag=5
-      }
-    }
-  }
-}
-
-associations_cd_sp_nz=my_univariate_results
-
-
-f.Test CD: Presence of species is related to presence of metabolites [<70%]
-===
-
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny", "clinical_Diagnosis")
-
-my_phenos=ibd_test_phenos[,c(regressors)]
-
-ibd_species=merge(my_phenos,my_taxa4, by="row.names")
-row.names(ibd_species)=ibd_species$Row.names
-ibd_species$Row.names=NULL
-
-ibd_test_phenos3=merge(ibd_species,bi_mtb2, by="row.names")
-row.names(ibd_test_phenos3)=ibd_test_phenos3$Row.names
-ibd_test_phenos3$Row.names=NULL
-ibd_test_cd_phenos_prev2=subset(ibd_test_phenos3, ibd_test_phenos3$clinical_Diagnosis=="2")
-ibd_test_cd_phenos_prev2$clinical_Diagnosis=NULL
-
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny")
-
-
-flag=1
-for ( i in 1:117) {
-  my_pheno=colnames(ibd_test_cd_phenos_prev2)[i]
-  if (my_pheno %in% regressors) {
-    print (paste("Skipping phenotype:",my_pheno))
-  } else {
-    print (paste("Testing:",my_pheno))
-    for (a in 118:ncol( ibd_test_cd_phenos_prev2)){
-      my_trait=colnames(ibd_test_cd_phenos_prev2)[a]
-      my_uni_test=ibd_test_cd_phenos_prev2[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
-      my_samples=nrow(my_uni_test)
-      my_lm=summary(glm(my_f, family = binomial(link="logit"), data =my_uni_test))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
-      if (flag!=1){
-        my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
-      }else{
-        my_univariate_results=my_lm_pheno
+        my_final_result_lin=my_first_result
         flag=5
       }
     }
   }
 }
 
-associations_cd_sp_prev_mtb_prev=my_univariate_results
+my_final_result_lin$same_direction="no"
+my_final_result_lin$same_direction[my_final_result_lin$Beta_bug>0 & my_final_result_lin$direction_eubiosis>0 & my_final_result_lin$direction_dysbiosis>0]="yes"
+my_final_result_lin$same_direction[my_final_result_lin$Beta_bug<0 & my_final_result_lin$direction_eubiosis<0 & my_final_result_lin$direction_dysbiosis<0 ]="yes"
+my_final_result_lin$FDR_combined=p.adjust(my_final_result_lin$p_val_bug, method = "BH")
+my_final_result_lin$FDR_eubiosis=p.adjust(my_final_result_lin$p_val_eubiosis, method = "BH")
+my_final_result_lin$FDR_dysbiosis=p.adjust(my_final_result_lin$p_val_dysbiosis, method = "BH")
+my_final_result_lin$FDR_interaction=p.adjust(my_final_result_lin$p_val_interaction, method = "BH")
+write.table(my_final_result_lin, "~/Desktop/IBD_metabolomics_2022/7.2.Rebuttal-Gut/Bug-metabolite_interaction_li.txt", sep = "\t", quote = F)
 
-g. UC: test Species abundance related to metabolite levels
-===
 
-uc_specie_lin=subset(ibd_species_lin, ibd_species_lin$clinical_Diagnosis=="1")
-uc_specie_lin$clinical_Diagnosis=NULL
+
+####################
+
+# Test relation between metabolite and metabolic gene clusters (zeroes are coded as NA's)
+# Model 0: y ~ covariates + MGS + dysbiosis
+# Model 1: y ~ covariates + MGS * dysbiosis
+
+###################
+
+#Remove bugs from the input file in the bug-metabolite association
+models_for_interac_mgc=models_for_interac[,c(1:29,139:1001)]
+mgc_fil_trans2=bgc_rpkm4
+mgc_fil_trans2[mgc_fil_trans2==0]=NA
+mgc_fil_trans3=transform_and_filter_mtb(mgc_fil_trans2, samples_row = T, method = "clr",missing_filter = 20)
+models_for_interac_mgc=merge(models_for_interac_mgc, mgc_fil_trans3, by="row.names")
+row.names(models_for_interac_mgc)=models_for_interac_mgc$Row.names
+models_for_interac_mgc$Row.names=NULL
+run_day_batch=cc_pheno6[,"run_day_cat", drop=F]
+models_for_interac_mgc=merge(run_day_batch,models_for_interac_mgc, by="row.names")
+row.names(models_for_interac_mgc)=models_for_interac_mgc$Row.names
+models_for_interac_mgc$Row.names=NULL
+test_metabolites=colnames(q_mtbx2)
+test_bugs=colnames(mgc_fil_trans3)
+total=ncol(mgc_fil_trans3)
+#regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny",colnames(run_day), "cohort")
+regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny","cohort" ,"run_day_cat")
 
 flag=1
-for ( i in 1:117) {
-  my_pheno=colnames(uc_specie_lin)[i]
+count=0
+for ( i in test_bugs) {
+  count=count+1
+  my_pheno=i
+  print (paste(paste(paste("Testing:",count), "/", total)))
   if (my_pheno %in% regressors) {
     print (paste("Skipping phenotype:",my_pheno))
   } else {
     print (paste("Testing:",my_pheno))
-    for (a in 118:ncol(uc_specie_lin)){
-      my_trait=colnames(uc_specie_lin)[a]
-      my_uni_test=uc_specie_lin[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
+    for (a in test_metabolites){
+      my_trait=a
+      my_uni_test=models_for_interac_mgc[,c(regressors,my_pheno,my_trait, "dysbiotic")]
+      my_preds=c(regressors,"dysbiotic",my_pheno)
+      my_f0=as.formula(paste(my_trait, paste(regressors, collapse = " + "), sep = " ~ "))
+      my_lm0=summary(lm(my_f0,data = my_uni_test ))
+      my_lm0_coef=as.data.frame(my_lm0$coefficients)
+      interaction_factor=paste(my_pheno,"dysbiotic",sep="*")
+      my_preds=c(regressors)
+      my_f=as.formula(paste(my_trait, paste(paste(my_preds, collapse = " + "), interaction_factor, sep="+"), sep = " ~ "))
       my_samples=nrow(my_uni_test)
-      my_lm=summary(lm(my_f,data = my_uni_test ))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
+      my_lm=lm(my_f,data = my_uni_test )
+      my_lm_sum=summary(my_lm)
+      my_em=test(emtrends(my_lm, pairwise ~ dysbiotic, var = my_pheno, adjust="none"))
+      my_trends=as.data.frame(my_em$emtrends)
+      my_lm_coef=as.data.frame(my_lm_sum$coefficients)
+       #Warning, check if betas and pvalues are extracted corrected before running
+      my_first_result=data.frame(Metabolite=my_trait, 
+                                 My_Bug=my_pheno, 
+                                 combined_beta=my_lm0_coef[nrow(my_lm0_coef)-1,1],
+                                 combined_pval=my_lm0_coef[nrow(my_lm0_coef)-1,4],
+                                 beta_interaction=my_lm_coef[nrow(my_lm_coef),1],
+                                 p_val_interaction=my_lm_coef[nrow(my_lm_coef),4],
+                                 direction_eubiosis=my_trends[1,2],
+                                 p_val_eubiosis=my_trends[1,6],
+                                 direction_dysbiosis=my_trends[2,2],
+                                 p_val_dysbiosis=my_trends[2,6])
+
       if (flag!=1){
-          my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
+        my_final_result_mgc=rbind(my_final_result_mgc,my_first_result)
       }else{
-          my_univariate_results=my_lm_pheno
-          flag=5
-      }
-    }
-  }
-}
-
-associations_uc_sp_nz=my_univariate_results
-
-
-h. UC test species presence related to metabolites levels
-===
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny",colnames(run_day))
-
-uc_specie=subset(ibd_species, ibd_species$clinical_Diagnosis=="1")
-uc_specie$clinical_Diagnosis=NULL
-
-flag=1
-for ( i in 1:137) {
-  my_pheno=colnames(uc_specie)[i]
-  if (my_pheno %in% regressors) {
-    print (paste("Skipping phenotype:",my_pheno))
-  } else {
-    print (paste("Testing:",my_pheno))
-    for (a in 138:ncol(uc_specie)){
-      my_trait=colnames(uc_specie)[a]
-      my_uni_test=uc_specie[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
-      my_samples=nrow(my_uni_test)
-      my_lm=summary(lm(my_f,data = my_uni_test ))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
-      if (flag!=1){
-          my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
-      }else{
-          my_univariate_results=my_lm_pheno
-          flag=5
-      }
-    }
-  }
-}
-
-associations_uc_sp_prev=my_univariate_results
-
-
-i. Test UC: Presence of species is related to presence of metabolites [<70%]
-===
-
-
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny", "clinical_Diagnosis")
-
-my_phenos=ibd_test_phenos[,c(regressors)]
-
-ibd_species=merge(my_phenos,my_taxa4, by="row.names")
-row.names(ibd_species)=ibd_species$Row.names
-ibd_species$Row.names=NULL
-
-ibd_test_phenos3=merge(ibd_species,bi_mtb2, by="row.names")
-row.names(ibd_test_phenos3)=ibd_test_phenos3$Row.names
-ibd_test_phenos3$Row.names=NULL
-ibd_test_cd_phenos_prev2=subset(ibd_test_phenos3, ibd_test_phenos3$clinical_Diagnosis=="1")
-ibd_test_cd_phenos_prev2$clinical_Diagnosis=NULL
-
-regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny")
-
-flag=1
-for ( i in 1:117) {
-  my_pheno=colnames(ibd_test_cd_phenos_prev2)[i]
-  if (my_pheno %in% regressors) {
-    print (paste("Skipping phenotype:",my_pheno))
-  } else {
-    print (paste("Testing:",my_pheno))
-    for (a in 118:ncol( ibd_test_cd_phenos_prev2)){
-      my_trait=colnames(ibd_test_cd_phenos_prev2)[a]
-      my_uni_test=ibd_test_cd_phenos_prev2[,c(regressors,my_pheno,my_trait)]
-      my_preds=c(regressors,my_pheno)
-      my_f=as.formula(paste(my_trait, paste(my_preds, collapse = " + "), sep = " ~ "))
-      my_samples=nrow(my_uni_test)
-      my_lm=summary(glm(my_f, family = binomial(link="logit"), data =my_uni_test))
-      my_lm_coef=as.data.frame(my_lm$coefficients)
-      my_lm_pheno=try(my_lm_coef[grep(my_pheno, rownames(my_lm_coef)), ])
-      my_lm_pheno$metabolite=my_trait
-      my_lm_pheno$phenotype=my_pheno
-      my_lm_pheno$factor=rownames(my_lm_pheno)
-      if (flag!=1){
-        my_univariate_results=rbind(my_univariate_results,my_lm_pheno)
-      }else{
-        my_univariate_results=my_lm_pheno
+        my_final_result_mgc=my_first_result
         flag=5
       }
     }
   }
 }
 
-associations_uc_sp_prev_mtb_prev=my_univariate_results
+
+my_final_result_mgc$same_direction="no"
+my_final_result_mgc$same_direction[my_final_result_mgc$Beta_bug>0 & my_final_result_mgc$direction_eubiosis>0 & my_final_result_mgc$direction_dysbiosis>0]="yes"
+my_final_result_mgc$same_direction[my_final_result_mgc$Beta_bug<0 & my_final_result_mgc$direction_eubiosis<0 & my_final_result_mgc$direction_dysbiosis<0 ]="yes"
+my_final_result_mgc$FDR_combined=p.adjust(my_final_result_mgc$p_val_bu, method = "BH")
+my_final_result_mgc$FDR_eubiosis=p.adjust(my_final_result_mgc$p_val_eubiosis, method = "BH")
+my_final_result_mgc$FDR_dysbiosis=p.adjust(my_final_result_mgc$p_val_dysbiosis, method = "BH")
+my_final_result_mgc$FDR_interaction=p.adjust(my_final_result_mgc$p_val_interaction, method = "BH")
+
+
+write.table(my_final_result_mgc, "~/Desktop/IBD_metabolomics_2022/7.2.Rebuttal-Gut/Bug-metabolite_dysbiosis_interaction_mgc_final2.txt", sep = "\t", quote = F)
+
+
+####################
+
+# Test relation between metabolite and METACYC pathways (zeroes are coded as NA's)
+# Model 0: y ~ covariates + PATH + dysbiosis
+# Model 1: y ~ covariates + PATH * dysbiosis
+
+###################
+
+pathways_raw <- read.delim("~/Desktop/IBD_metabolomics_2022/1.Input/Metacyc/Merged_metacyc_uniref90_filtered_renames.txt", row.names = 1)
+pathways_samples=subset(pathways_raw,rownames(pathways_raw) %in% rownames(cc_pheno2))
+pathways_samples[pathways_samples==0]=NA
+pathways_filt=transform_and_filter_mtb(pathways_samples,samples_row = T,method = "clr",missing_filter = 20)
+pathways_filt$UNMAPPED=NULL
+pathways_filt$UNINTEGRATED=NULL
+models_for_interac_pwy=models_for_interac[,c(1:29,139:1001)]
+models_for_interac_pwy=merge(models_for_interac_pwy, pathways_filt, by="row.names")
+row.names(models_for_interac_pwy)=models_for_interac_pwy$Row.names
+models_for_interac_pwy$Row.names=NULL
+run_day_batch=cc_pheno6[,"run_day_cat", drop=F]
+models_for_interac_pwy=merge(run_day_batch,models_for_interac_pwy, by="row.names")
+row.names(models_for_interac_pwy)=models_for_interac_pwy$Row.names
+models_for_interac_pwy$Row.names=NULL
+
+test_metabolites=colnames(q_mtbx2)
+test_bugs=colnames(pathways_filt)
+total=ncol(pathways_filt)
+regressors=c("LC.COLUMN","Amount_sample_gram","metabolon_Month_in_freezer","host_Sex","host_Age", "host_BMI", "clinical_BowelMovementADayDef","clinical_ResectionAny", "cohort","run_day_cat")
 
 
 
+flag=1
+count=0
+for ( i in test_bugs) {
+  count=count+1
+  my_pheno=i
+  print (paste(paste(paste("Testing:",count), "/", total)))
+  if (my_pheno %in% regressors) {
+    print (paste("Skipping phenotype:",my_pheno))
+  } else {
+    print (paste("Testing:",my_pheno))
+    for (a in test_metabolites){
+      my_trait=a
+      my_uni_test=models_for_interac_pwy[,c(regressors,my_pheno,my_trait, "dysbiotic")]
+      my_preds=c(regressors,"dysbiotic",my_pheno)
+      my_f0=as.formula(paste(my_trait, paste(regressors, collapse = " + "), sep = " ~ "))
+      my_lm0=summary(lm(my_f0,data = my_uni_test ))
+      my_lm0_coef=as.data.frame(my_lm0$coefficients)
+      interaction_factor=paste(my_pheno,"dysbiotic",sep="*")
+      my_preds=c(regressors)
+      my_f=as.formula(paste(my_trait, paste(paste(my_preds, collapse = " + "), interaction_factor, sep="+"), sep = " ~ "))
+      my_samples=nrow(my_uni_test)
+      my_lm=lm(my_f,data = my_uni_test )
+      my_lm_sum=summary(my_lm)
+      my_em=test(emtrends(my_lm, pairwise ~ dysbiotic, var = my_pheno, adjust="none"))
+      my_trends=as.data.frame(my_em$emtrends)
+      my_lm_coef=as.data.frame(my_lm_sum$coefficients)
+      #Warning, check if betas and pvalues are extracted corrected before running
+      my_first_result=data.frame(Metabolite=my_trait, 
+                                 My_Bug=my_pheno, 
+                                 combined_beta=my_lm0_coef[nrow(my_lm0_coef)-1,1],
+                                 combined_pval=my_lm0_coef[nrow(my_lm0_coef)-1,4],
+                                 beta_interaction=my_lm_coef[nrow(my_lm_coef),1],
+                                 p_val_interaction=my_lm_coef[nrow(my_lm_coef),4],
+                                 direction_eubiosis=my_trends[1,2],
+                                 p_val_eubiosis=my_trends[1,6],
+                                 direction_dysbiosis=my_trends[2,2],
+                                 p_val_dysbiosis=my_trends[2,6])
+      if (flag!=1){
+        my_final_result_pwy=rbind(my_final_result_pwy,my_first_result)
+      }else{
+        my_final_result_pwy=my_first_result
+        flag=5
+      }
+    }
+  }
+}
 
+
+my_final_result_pwy2=my_final_result_pwy
+my_final_result_pwy2$same_direction="no"
+my_final_result_pwy2$same_direction[my_final_result_pwy2$Beta_bug>0 & my_final_result_pwy2$direction_eubiosis>0 & my_final_result_pwy2$direction_dysbiosis>0]="yes"
+my_final_result_pwy2$same_direction[my_final_result_pwy2$Beta_bug<0 & my_final_result_pwy2$direction_eubiosis<0 & my_final_result_pwy2$direction_dysbiosis<0 ]="yes"
+my_final_result_pwy2$FDR_combined=p.adjust(my_final_result_pwy2$p_val_bug, method = "BH")
+my_final_result_pwy2$FDR_eubiosis=p.adjust(my_final_result_pwy2$p_val_eubiosis, method = "BH")
+my_final_result_pwy2$FDR_dysbiosis=p.adjust(my_final_result_pwy2$p_val_dysbiosis, method = "BH")
+my_final_result_pwy2$FDR_interaction=p.adjust(my_final_result_pwy2$p_val_interaction, method = "BH")
+write.table(my_final_result_pwy2, "~/Desktop/IBD_metabolomics_2022/7.2.Rebuttal-Gut/Bug-metabolite_dysbiosis_interaction_pwy.txt", sep = "\t", quote = F)
